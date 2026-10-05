@@ -412,6 +412,8 @@ Class AGENTSERVICEForm: Form
 			DoMkMod(ModuleId, Payload);
 		Elseif Op = "MKASM" Then
 			DoMkAsm(ParamOf(Command, "ASM"));
+		Elseif Op = "FLUSHCACHE" Then
+			DoFlushCache;
 		Else
 			Append_("STATUS=ERR");
 			Append_("MSG=неизвестная команда OP=" + Op);
@@ -885,6 +887,36 @@ Class AGENTSERVICEForm: Form
 		Append_("NAME=" + Desc.Name);
 		Append_("CHILDREN=" + Desc.Children.Count.ToString);
 	End Sub DoMkAsm;
+
+	// OP=FLUSHCACHE — очистить локальный кэш сборок.
+	// Справка (IMetabaseCache.FlushAll): «будет очищен локальный кэш сборок,
+	// в котором хранятся скомпилированные версии модулей/форм/сборок
+	// репозитория. Это в дальнейшем приведет к повторной компиляции
+	// запускаемых объектов».
+	// ЗАЧЕМ: платформа исполняет СКОМПИЛИРОВАННУЮ версию модуля, а не текущий
+	// текст. После правки текста запущенная форма продолжает работать на
+	// старом образе, пока кэш сборок не очищен.
+	Sub DoFlushCache;
+	Var
+		MB: IMetabase;
+	Begin
+		MB := MetabaseClass.Active;
+		If IsNull(MB) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=нет активного репозитория");
+			Return;
+		End If;
+		Try
+			MB.Cache.FlushAll;
+			Append_("STATUS=OK");
+			Append_("WHAT=FLUSHCACHE");
+			Append_("MSG=локальный кэш сборок очищен; объекты будут скомпилированы заново");
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=FLUSHCACHE");
+			Append_("MSG=кэш не очищен: " + e.Message);
+		End Try;
+	End Sub DoFlushCache;
 
 	// ========================================================================
 	//  9) ВСПОМОГАТЕЛЬНОЕ
