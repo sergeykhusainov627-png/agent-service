@@ -110,24 +110,48 @@ origin  https://github.com/sergeykhusainov627-png/agent-service.git
    git push -u origin main
    ```
 
-## Текущее состояние до отправки
+## Состояние
+
+**Отправлено и работает:**
 
 ```
-e422967  Уточнён аккаунт GitHub и порядок отправки
-dc8487f  Добавлено описание версионирования
-b82f2df  Начальное состояние: служебная сборка агента, канал и прошивка
-65 файлов, ветка main
+https://github.com/sergeykhusainov627-png/agent-service   (публичный)
+
+6f4ef9d  Замечание о подписи коммитов для нового аккаунта
+affc084  Уточнён аккаунт GitHub и порядок отправки
+bbe5b0e  Добавлено описание версионирования
+967be40  Начальное состояние: служебная сборка агента, канал и прошивка
+
+ветка main, 65 файлов, локальная ветка связана с origin/main
 ```
 
-Подпись коммитов берётся из глобальной настройки git
-(`user.name = ser4ega`, `user.email = 54957282+ser4ega@users.noreply.github.com`).
-Если отправка пойдёт в аккаунт `sergeykhusainov627-png`, стоит поправить
-`user.name`/`user.email` на адрес этого аккаунта — иначе GitHub не свяжет
-коммиты с профилем:
+Хеши в списке — после переписывания авторства (`git filter-branch`), поэтому
+они отличаются от первоначальных.
+
+**Подпись коммитов** — локальная настройка репозитория:
+`sergeykhusainov627-png <sergeykhusainov627@gmail.com>`.
+Глобальная настройка не тронута: в других проектах остаётся прежняя подпись.
+
+**Доступ по SSH.** Ключ `~/.ssh/id_ed25519_github` (ed25519, без пароля,
+только для этой машины), публичная часть добавлена в аккаунт. В репозитории
+записано:
 
 ```
-git config --global user.name "sergeykhusainov627-png"
-git config --global user.email "<адрес из настроек аккаунта>"
+core.sshCommand = ssh -i C:/Users/Manya/.ssh/id_ed25519_github -o IdentitiesOnly=yes
 ```
+
+> **Грабля git:** путь в `core.sshCommand` нужно писать **прямыми слэшами**.
+> С обратными (`C:\Users\...`) git съедает их как escape-последовательности,
+> и путь превращается в `C:UsersManya.sshid_ed25519_github` — SSH отвечает
+> `Permission denied (publickey)`, хотя ключ на месте.
+
+**Отправка изменений** теперь одной командой:
+
+```
+git add -A
+git commit -m "..."
+git push
+```
+
 
 
