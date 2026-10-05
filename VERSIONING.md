@@ -113,8 +113,21 @@ origin  https://github.com/sergeykhusainov627-png/agent-service.git
 ## Текущее состояние до отправки
 
 ```
-b82f2df  Начальное состояние: служебная сборка агента, канал и прошивка
+e422967  Уточнён аккаунт GitHub и порядок отправки
 dc8487f  Добавлено описание версионирования
+b82f2df  Начальное состояние: служебная сборка агента, канал и прошивка
 65 файлов, ветка main
 ```
+
+Подпись коммитов берётся из глобальной настройки git
+(`user.name = ser4ega`, `user.email = 54957282+ser4ega@users.noreply.github.com`).
+Если отправка пойдёт в аккаунт `sergeykhusainov627-png`, стоит поправить
+`user.name`/`user.email` на адрес этого аккаунта — иначе GitHub не свяжет
+коммиты с профилем:
+
+```
+git config --global user.name "sergeykhusainov627-png"
+git config --global user.email "<адрес из настроек аккаунта>"
+```
+
 
