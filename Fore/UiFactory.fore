@@ -1,0 +1,1068 @@
+// ID: UIFACTORY  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: ФАБРИКА ЭКРАНОВ — создание компонентов формы КОДОМ из описания (spec).
+// Зачем: экран описывается данными (текст/таблица), а не кликами в дизайнере. Один и тот же набор
+// данных даёт форму, панель или вкладку; добавление элемента = строка описания.
+//
+// Проверено по справке (KB «Компоненты дизайнера форм», справка языка, ModForms):
+//   * визуальные компоненты: Ctl := New <Класс>.Create; Ctl.Parent := Self (форма) или контейнер;
+//   * свойства IControl: Left/Top/Width/Height/Visible/Enabled/Text/Name/Tag, событие OnClick;
+//   * невизуальные (IComponent): New Timer.Create (Parent не нужен);
+//   * освобождение: FreeComponent(<IControl>) + Dispose; для невизуальных — Dispose.
+//
+// Формат описания (одна строка = один компонент, разделитель «;», комментарий — «#»):
+//   Kind;Name;Caption;Left;Top;Width;Height;Handler;Lines(Lines разделяются «|»)
+// Пример: BUTTON;BtnSave;Сохранить;10;10;120;28;UiDemoButtonClick
+// ВАЖНО: подписка на события выполняется на стороне формы (фабрика не знает её процедур):
+//   Btn := UiFind(Map, 'BtnSave') As Button;  Btn.OnClick := UiDemoButtonClick;
+// либо циклом по UiButtonsOf(Map, Specs).
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	UI_CRLF = #13 + #10;
+	UI_DELIM = ";";                 // разделитель полей в описании
+	UI_LISTSEP = "|";               // разделитель строк внутри поля Lines
+	// Координаты в описании: False — уже ОТНОСИТЕЛЬНО родителя (как в дизайнере: у компонента внутри
+	// контейнера Left/Top считаются от клиентской области контейнера); True — абсолютные (как в макете),
+	// и для компонентов внутри контейнера фабрика вычтет положение контейнера (один уровень вложенности).
+	UI_SPEC_ABS_COORDS = False;
+	// --- Виды компонентов (поле Kind) ---
+	UI_LABEL = "LABEL";
+	UI_BUTTON = "BUTTON";
+	UI_EDIT = "EDIT";
+	UI_MEMO = "MEMO";
+	UI_CHECK = "CHECK";
+	UI_COMBO = "COMBO";
+	UI_LISTBOX = "LISTBOX";
+	UI_GROUP = "GROUP";
+	UI_PANEL = "PANEL";
+	UI_SCROLLBOX = "SCROLLBOX";
+	UI_PROGRESS = "PROGRESS";
+	UI_PICKER = "PICKER";
+	UI_TIMER = "TIMER";
+
+// --- Описание одного компонента экрана ---
+Class CUiSpec: Object
+	Public Kind: String;            // вид (см. UI_*)
+	Public Name: String;            // уникальное имя в описании (ключ карты)
+	Public Caption: String;         // подпись/текст
+	Public Left: Integer;
+	Public Top: Integer;
+	Public Width: Integer;
+	Public Height: Integer;
+	Public Handler: String;         // имя обработчика — только для справки (подписка на форме)
+	Public Lines: ArrayList;        // строки для MEMO/LISTBOX/COMBO
+	Public Checked: Boolean;        // для CHECK
+	Public Visible: Boolean;
+	Public Enabled: Boolean;
+	Public Value: Integer;          // для PROGRESS (Position) и TIMER (интервал, мс)
+	Public Min: Integer;            // для PROGRESS
+	Public Max: Integer;            // для PROGRESS
+	Public ParentName: String;      // имя контейнера-родителя (пусто = родитель, переданный в UiCreate)
+End Class CUiSpec;
+
+// --- Пустой spec с заполненными «служебными» значениями по умолчанию ---
+Public Function UiSpec(Kind: String; Name: String; Caption: String; L, T, W, H: Integer): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := New CUiSpec.Create;
+	S.Kind := Kind;
+	S.Name := Name;
+	S.Caption := Caption;
+	S.Left := L;
+	S.Top := T;
+	S.Width := W;
+	S.Height := H;
+	S.Handler := "";
+	S.Checked := False;
+	S.Visible := True;
+	S.Enabled := True;
+	S.Value := 0;
+	S.ParentName := "";
+	Return S;
+End Function UiSpec;
+
+// --- Конструкторы описаний (короткие обёртки) ---
+Public Function UiLabel(Name: String; Caption: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_LABEL, Name, Caption, L, T, W, H);
+End Function UiLabel;
+
+Public Function UiButton(Name: String; Caption: String; L, T, W, H: Integer; Handler: String): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_BUTTON, Name, Caption, L, T, W, H);
+	S.Handler := Handler;
+	Return S;
+End Function UiButton;
+
+Public Function UiEdit(Name: String; Text: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_EDIT, Name, Text, L, T, W, H);
+End Function UiEdit;
+
+Public Function UiMemo(Name: String; L, T, W, H: Integer; Lines: ArrayList): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_MEMO, Name, "", L, T, W, H);
+	S.Lines := Lines;
+	Return S;
+End Function UiMemo;
+
+Public Function UiCheck(Name: String; Caption: String; Checked: Boolean; L, T, W, H: Integer): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_CHECK, Name, Caption, L, T, W, H);
+	S.Checked := Checked;
+	Return S;
+End Function UiCheck;
+
+Public Function UiCombo(Name: String; L, T, W, H: Integer; Items: ArrayList): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_COMBO, Name, "", L, T, W, H);
+	S.Lines := Items;
+	Return S;
+End Function UiCombo;
+
+Public Function UiListBox(Name: String; L, T, W, H: Integer; Items: ArrayList): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_LISTBOX, Name, "", L, T, W, H);
+	S.Lines := Items;
+	Return S;
+End Function UiListBox;
+
+Public Function UiGroup(Name: String; Caption: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_GROUP, Name, Caption, L, T, W, H);
+End Function UiGroup;
+
+Public Function UiPanel(Name: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_PANEL, Name, "", L, T, W, H);
+End Function UiPanel;
+
+Public Function UiScrollBox(Name: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_SCROLLBOX, Name, "", L, T, W, H);
+End Function UiScrollBox;
+
+Public Function UiProgress(Name: String; Min, Max, Position: Integer; L, T, W, H: Integer): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_PROGRESS, Name, "", L, T, W, H);
+	S.Min := Min;
+	S.Max := Max;
+	S.Value := Position;
+	Return S;
+End Function UiProgress;
+
+Public Function UiPicker(Name: String; L, T, W, H: Integer): CUiSpec;
+Begin
+	Return UiSpec(UI_PICKER, Name, "", L, T, W, H);
+End Function UiPicker;
+
+// --- Таймер (невизуальный компонент: Parent не нужен) ---
+Public Function UiTimer(Name: String; IntervalMs: Integer): CUiSpec;
+Var
+	S: CUiSpec;
+Begin
+	S := UiSpec(UI_TIMER, Name, "", 0, 0, 0, 0);
+	S.Value := IntervalMs;
+	Return S;
+End Function UiTimer;
+
+// --- Разместить визуальный компонент по описанию (Scale = 1.0, координаты — относительно родителя) ---
+Public Sub UiPlace(C: IControl; Spec: CUiSpec);
+Begin
+	UiPlaceScaled(C, Spec, 1.0, False);
+End Sub UiPlace;
+
+// --- Разместить визуальный компонент с масштабом координат (единицы макета → форма) ---
+// ⚠ ВАЖНО: у компонента внутри контейнера Left/Top считаются ОТ КЛИЕНТСКОЙ ОБЛАСТИ контейнера.
+//    AbsToRel = True — в описании координаты абсолютные (как в макете на форме), тогда вычитаем
+//    положение контейнера (для Panel/ScrollBox точно; у GroupBox подпись сверху добавляет ~15 px).
+Public Sub UiPlaceScaled(C: IControl; Spec: CUiSpec; Scale: Double; AbsToRel: Boolean);
+Var
+	Par: IControl;
+	L, T: Integer;
+Begin
+	L := Spec.Left;
+	T := Spec.Top;
+	If AbsToRel Then
+		Par := C.Parent;
+		If Not IsNull(Par) Then
+			L := L - Par.Left;
+			T := T - Par.Top;
+		End If;
+	End If;
+	C.Name := Spec.Name;
+	C.Left := Double.RoundInt(L * Scale);
+	C.Top := Double.RoundInt(T * Scale);
+	C.Width := Double.RoundInt(Spec.Width * Scale);
+	C.Height := Double.RoundInt(Spec.Height * Scale);
+	C.Visible := Spec.Visible;
+	C.Enabled := Spec.Enabled;
+	If Spec.Caption <> "" Then
+		C.Text := Spec.Caption;
+	End If;
+End Sub UiPlaceScaled;
+
+// --- Заполнить коллекцию строк (Memo.Lines / ComboBox.Items / ListBox.Items) ---
+Public Sub UiFillLines(Target: IStringList; Lines: ArrayList);
+Var
+	I: Integer;
+Begin
+	If IsNull(Target) Or IsNull(Lines) Then
+		Return;
+	End If;
+	For I := 0 To Lines.Count - 1 Do
+		Target.Add(Lines.Item(I) As String);
+	End For;
+End Sub UiFillLines;
+
+// --- Создать один компонент по описанию (Parent — форма (Self) или контейнер) ---
+Public Function UiCreateOne(Parent: IControl; Spec: CUiSpec): Variant;
+Begin
+	Return UiCreateOneScaled(Parent, Spec, 1.0);
+End Function UiCreateOne;
+
+// --- Создать один компонент с масштабом координат ---
+Public Function UiCreateOneScaled(Parent: IControl; Spec: CUiSpec; Scale: Double): Variant;
+Var
+	Lbl: Label;
+	Btn: Button;
+	Ed: EditBox;
+	Mm: Memo;
+	Ck: CheckBox;
+	Cb: ComboBox;
+	Lb: ListBox;
+	Gr: GroupBox;
+	Pn: Panel;
+	Sb: ScrollBox;
+	Pr: ProgressBar;
+	Dp: DateTimePicker;
+	Tm: Timer;
+	Res: Variant;
+	ChildAbs: Boolean;
+Begin
+	Res := Null;
+	If IsNull(Spec) Then
+		Return Res;
+	End If;
+	// для компонента внутри контейнера: пересчитывать ли абсолютные координаты описания
+	ChildAbs := UI_SPEC_ABS_COORDS And (Spec.ParentName <> "");
+	If Spec.Kind = UI_LABEL Then
+		Lbl := New Label.Create;
+		Lbl.Parent := Parent;
+		UiPlaceScaled(Lbl, Spec, Scale, ChildAbs);
+		Res := Lbl;
+	End If;
+	If Spec.Kind = UI_BUTTON Then
+		Btn := New Button.Create;
+		Btn.Parent := Parent;
+		UiPlaceScaled(Btn, Spec, Scale, ChildAbs);
+		Res := Btn;
+	End If;
+	If Spec.Kind = UI_EDIT Then
+		Ed := New EditBox.Create;
+		Ed.Parent := Parent;
+		UiPlaceScaled(Ed, Spec, Scale, ChildAbs);
+		Res := Ed;
+	End If;
+	If Spec.Kind = UI_MEMO Then
+		Mm := New Memo.Create;
+		Mm.Parent := Parent;
+		UiPlaceScaled(Mm, Spec, Scale, ChildAbs);
+		Mm.WordWrap := True;
+		UiFillLines(Mm.Lines, Spec.Lines);
+		Res := Mm;
+	End If;
+	If Spec.Kind = UI_CHECK Then
+		Ck := New CheckBox.Create;
+		Ck.Parent := Parent;
+		UiPlaceScaled(Ck, Spec, Scale, ChildAbs);
+		Ck.Checked := Spec.Checked;
+		Res := Ck;
+	End If;
+	If Spec.Kind = UI_COMBO Then
+		Cb := New ComboBox.Create;
+		Cb.Parent := Parent;
+		UiPlaceScaled(Cb, Spec, Scale, ChildAbs);
+		UiFillLines(Cb.Items, Spec.Lines);
+		Res := Cb;
+	End If;
+	If Spec.Kind = UI_LISTBOX Then
+		Lb := New ListBox.Create;
+		Lb.Parent := Parent;
+		UiPlaceScaled(Lb, Spec, Scale, ChildAbs);
+		UiFillLines(Lb.Items, Spec.Lines);
+		Res := Lb;
+	End If;
+	If Spec.Kind = UI_GROUP Then
+		Gr := New GroupBox.Create;
+		Gr.Parent := Parent;
+		UiPlaceScaled(Gr, Spec, Scale, ChildAbs);
+		Res := Gr;
+	End If;
+	If Spec.Kind = UI_PANEL Then
+		Pn := New Panel.Create;
+		Pn.Parent := Parent;
+		UiPlaceScaled(Pn, Spec, Scale, ChildAbs);
+		Res := Pn;
+	End If;
+	If Spec.Kind = UI_SCROLLBOX Then
+		Sb := New ScrollBox.Create;
+		Sb.Parent := Parent;
+		UiPlaceScaled(Sb, Spec, Scale, ChildAbs);
+		Res := Sb;
+	End If;
+	If Spec.Kind = UI_PROGRESS Then
+		Pr := New ProgressBar.Create;
+		Pr.Parent := Parent;
+		UiPlaceScaled(Pr, Spec, Scale, ChildAbs);
+		Pr.Min := Spec.Min;
+		Pr.Max := Spec.Max;
+		Pr.Position := Spec.Value;
+		Res := Pr;
+	End If;
+	If Spec.Kind = UI_PICKER Then
+		Dp := New DateTimePicker.Create;
+		Dp.Parent := Parent;
+		UiPlaceScaled(Dp, Spec, Scale, ChildAbs);
+		// DateTimePickerKind (сборка Forms): 0 Date — дата, 1 Time — время.
+		// Нужен «время» — смените Kind на форме: Dp.Kind := DateTimePickerKind.Time;
+		Try
+			Dp.Kind := DateTimePickerKind.Date;
+			Dp.Format := "dd.MM.yyyy";
+		Except On e: Exception Do
+			Debug.WriteLine("Фабрика: настройка пикера — " + e.Message);
+		End Try;
+		Res := Dp;
+	End If;
+	If Spec.Kind = UI_TIMER Then
+		Tm := New Timer.Create;            // невизуальный: Parent не нужен
+		Tm.Interval := Spec.Value;
+		Tm.Enabled := False;
+		Res := Tm;
+	End If;
+	Return Res;
+End Function UiCreateOneScaled;
+
+// --- Создать экран по описанию. Возврат: карта «имя → компонент» (SortedList) ---
+Public Function UiCreate(Parent: IControl; Specs: ArrayList): SortedList;
+Var
+	Map: SortedList;
+	Spec: CUiSpec;
+	C, PB: Variant;
+	Ctl: IControl;
+	I: Integer;
+Begin
+	Map := New SortedList.Create;
+	If IsNull(Specs) Then
+		Return Map;
+	End If;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		Ctl := Null;                                     // родитель: контейнер по имени или форма
+		If Spec.ParentName <> "" Then
+			PB := UiFind(Map, Spec.ParentName);
+			If Not IsNull(PB) Then
+				Try
+					Ctl := PB;                          // Variant → IControl (неявное преобразование)
+				Except On e: Exception Do
+					Debug.WriteLine("Фабрика: родитель '" + Spec.ParentName + "' не контейнер — " + e.Message);
+					Ctl := Null;
+				End Try;
+			End If;
+		End If;
+		If IsNull(Ctl) Then
+			Ctl := Parent;
+		End If;
+		C := UiCreateOne(Ctl, Spec);
+		If (Not IsNull(C)) And (Spec.Name <> "") Then
+			If Map.IndexOfKey(Spec.Name) < 0 Then
+				Map.Add(Spec.Name, C);
+			End If;
+		End If;
+	End For;
+	Return Map;
+End Function UiCreate;
+
+// --- Создать экран с масштабом координат (единицы макета × Scale) ---
+Public Function UiCreateScaled(Parent: IControl; Specs: ArrayList; Scale: Double): SortedList;
+Var
+	Map: SortedList;
+	Spec: CUiSpec;
+	C, PB: Variant;
+	Ctl: IControl;
+	I: Integer;
+Begin
+	Map := New SortedList.Create;
+	If IsNull(Specs) Then
+		Return Map;
+	End If;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		Ctl := Null;                                     // родитель: контейнер по имени или форма
+		If Spec.ParentName <> "" Then
+			PB := UiFind(Map, Spec.ParentName);
+			If Not IsNull(PB) Then
+				Try
+					Ctl := PB;                          // Variant → IControl (неявное преобразование)
+				Except On e: Exception Do
+					Debug.WriteLine("Фабрика: родитель '" + Spec.ParentName + "' не контейнер — " + e.Message);
+					Ctl := Null;
+				End Try;
+			End If;
+		End If;
+		If IsNull(Ctl) Then
+			Ctl := Parent;
+		End If;
+		C := UiCreateOneScaled(Ctl, Spec, Scale);
+		If (Not IsNull(C)) And (Spec.Name <> "") Then
+			If Map.IndexOfKey(Spec.Name) < 0 Then
+				Map.Add(Spec.Name, C);
+			End If;
+		End If;
+	End For;
+	Return Map;
+End Function UiCreateScaled;
+
+// --- Найти компонент по имени (Null, если нет) ---
+Public Function UiFind(Map: SortedList; Name: String): Variant;
+Var
+	Pos: Integer;
+Begin
+	If IsNull(Map) Then
+		Return Null;
+	End If;
+	Pos := Map.IndexOfKey(Name);
+	If Pos < 0 Then
+		Return Null;
+	End If;
+	Return Map.GetByIndex(Pos);
+End Function UiFind;
+
+// --- Имя компонента по ссылке (разбор Sender в общем обработчике) ---
+Public Function UiNameOf(Map: SortedList; C: Variant): String;
+Var
+	I: Integer;
+Begin
+	If IsNull(Map) Then
+		Return "";
+	End If;
+	For I := 0 To Map.Count - 1 Do
+		If Map.GetByIndex(I) = C Then
+			Return Map.GetKey(I) As String;
+		End If;
+	End For;
+	Return "";
+End Function UiNameOf;
+
+// --- Имя визуального компонента (свойство Name) ---
+// C — Variant: хранение компонентов в Object «обрезает» данные, поэтому здесь Variant
+// и неявное преобразование к интерфейсу (REFERENCE §5.2).
+Public Function UiNameOfCtl(C: Variant): String;
+Var
+	Ctl: IControl;
+Begin
+	If IsNull(C) Then
+		Return "";
+	End If;
+	Try
+		Ctl := C;
+	Except On e: Exception Do
+		Return "";
+	End Try;
+	If IsNull(Ctl) Then
+		Return "";
+	End If;
+	Return Ctl.Name;
+End Function UiNameOfCtl;
+
+// --- Все кнопки экрана (для подписки на OnClick одним циклом) ---
+Public Function UiButtonsOf(Map: SortedList; Specs: ArrayList): ArrayList;
+Var
+	Buttons: ArrayList;
+	Spec: CUiSpec;
+	C: Variant;
+	I: Integer;
+Begin
+	Buttons := New ArrayList.Create;
+	If IsNull(Map) Or IsNull(Specs) Then
+		Return Buttons;
+	End If;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		If Spec.Kind = UI_BUTTON Then
+			C := UiFind(Map, Spec.Name);
+			If Not IsNull(C) Then
+				Buttons.Add(C);
+			End If;
+		End If;
+	End For;
+	Return Buttons;
+End Function UiButtonsOf;
+
+// --- Освободить один компонент ---
+// TODO: освобождение памяти временно ОТКЛЮЧЕНО по требованию стенда — FreeComponent/Dispose при
+// пересборке/закрытии формы не вызываем (были падения). Задача: вернуть освобождение и описать
+// корректный сценарий (компоненты без Parent, невизуальные Timer/PopupMenu, порядок Dispose).
+Public Sub UiFreeOne(C: Variant);
+Begin
+	If IsNull(C) Then
+		Return;
+	End If;
+	If False Then                          // тело отключено — см. TODO выше
+		Debug.WriteLine("UiFreeOne: освобождение отключено (TODO)");
+	End If;
+End Sub UiFreeOne;
+
+// --- Освободить весь экран (обязательно вызывать в OnClose формы) ---
+Public Sub UiFree(Map: SortedList);
+Var
+	I: Integer;
+Begin
+	If IsNull(Map) Then
+		Return;
+	End If;
+	For I := 0 To Map.Count - 1 Do
+		UiFreeOne(Map.GetByIndex(I));
+	End For;
+	Map.Clear;
+End Sub UiFree;
+
+// ===========================================================================
+// ОПИСАНИЕ ЭКРАНА ТЕКСТОМ (экран = данные): разбор и обратная выгрузка
+// ===========================================================================
+
+// --- Разделить текст по разделителю (проверенный приём проекта: IndexOf + SubString) ---
+Public Sub UiSplitText(Text: String; Sep: String; OutList: ArrayList);
+Var
+	S: String;
+	P: Integer;
+Begin
+	If IsNull(OutList) Or (Sep = "") Then
+		Return;
+	End If;
+	S := Text;
+	While S <> "" Do
+		P := S.IndexOf(Sep);
+		If P < 0 Then
+			OutList.Add(S);
+			S := "";
+		Else
+			OutList.Add(S.SubString(0, P));
+			S := S.SubString(P + Sep.Length, S.Length - P - Sep.Length);
+		End If;
+	End While;
+End Sub UiSplitText;
+
+// --- Значение десятичной цифры по её символу ---
+Public Function UiDigitValue(Ch: String): Integer;
+Var
+	V: Integer;
+Begin
+	V := 0;
+	If Ch = "0" Then
+		V := 0;
+	End If;
+	If Ch = "1" Then
+		V := 1;
+	End If;
+	If Ch = "2" Then
+		V := 2;
+	End If;
+	If Ch = "3" Then
+		V := 3;
+	End If;
+	If Ch = "4" Then
+		V := 4;
+	End If;
+	If Ch = "5" Then
+		V := 5;
+	End If;
+	If Ch = "6" Then
+		V := 6;
+	End If;
+	If Ch = "7" Then
+		V := 7;
+	End If;
+	If Ch = "8" Then
+		V := 8;
+	End If;
+	If Ch = "9" Then
+		V := 9;
+	End If;
+	Return V;
+End Function UiDigitValue;
+
+// --- Строка → целое (своя реализация: не зависим от Integer.Parse) ---
+Public Function UiStrToInt(S: String): Integer;
+Var
+	V, I, Digit: Integer;
+	Ch: String;
+	Neg: Boolean;
+Begin
+	V := 0;
+	Neg := False;
+	If IsNull(S) Then
+		Return 0;
+	End If;
+	For I := 0 To S.Length - 1 Do
+		Ch := S.SubString(I, 1);
+		Digit := -1;
+		If (Ch = "-") And (I = 0) Then
+			Neg := True;
+		Else
+			If (Ch >= "0") And (Ch <= "9") Then
+				Digit := UiDigitValue(Ch);
+			End If;
+		End If;
+		If Digit >= 0 Then
+			V := V * 10 + Digit;
+		End If;
+	End For;
+	If Neg Then
+		V := -V;
+	End If;
+	Return V;
+End Function UiStrToInt;
+
+// --- Поле описания по индексу (пустая строка, если поля нет) ---
+Public Function UiField(Parts: ArrayList; Index: Integer): String;
+Begin
+	If IsNull(Parts) Then
+		Return "";
+	End If;
+	If Index >= Parts.Count Then
+		Return "";
+	End If;
+	Return String.Trim(Parts.Item(Index) As String);
+End Function UiField;
+
+// --- Список строк из поля (разделитель «|») ---
+Public Function UiFieldLines(Value: String): ArrayList;
+Var
+	Lines: ArrayList;
+Begin
+	Lines := New ArrayList.Create;
+	If Value = "" Then
+		Return Lines;
+	End If;
+	UiSplitText(Value, UI_LISTSEP, Lines);
+	Return Lines;
+End Function UiFieldLines;
+
+// --- Разобрать «ключ=значение» в поле описания (например Parent=GrpLeft) ---
+// Нужно, чтобы описание не зависело от количества полей: ключи можно дописывать в конец строки.
+Public Function UiSpecKeyValue(Part: String; Key: String): String;
+Var
+	P: Integer;
+Begin
+	P := Part.IndexOf("=");
+	If P <= 0 Then
+		Return "";
+	End If;
+	If String.ToUpper(Part.SubString(0, P)) <> String.ToUpper(Key) Then
+		Return "";
+	End If;
+	Return String.Trim(Part.SubString(P + 1, Part.Length - P - 1));
+End Function UiSpecKeyValue;
+
+// --- Разобрать описание экрана из текста (одна строка = один компонент) ---
+// Формат: Kind;Name;Caption;Left;Top;Width;Height;Handler;Значение;Min;Max[;Parent=Имя]
+//   CHECK: Значение = 1/True — флажок установлен; MEMO/COMBO/LISTBOX: Значение = строки через «|»;
+//   PROGRESS: Значение = позиция, Min/Max — границы; TIMER: Значение = интервал (мс);
+//   Parent=<имя> — вложенность: компонент создаётся внутри указанного контейнера (GroupBox/Panel/ScrollBox).
+Public Function UiSpecsFromText(Text: String): ArrayList;
+Var
+	Specs, Lines, Parts: ArrayList;
+	Spec: CUiSpec;
+	Line, Kind, Val: String;
+	I, J: Integer;
+Begin
+	Specs := New ArrayList.Create;
+	Lines := New ArrayList.Create;
+	UiSplitText(Text, UI_CRLF, Lines);
+	For I := 0 To Lines.Count - 1 Do
+		Line := String.Trim(Lines.Item(I) As String);
+		If (Line <> "") And (Line.SubString(0, 1) <> "#") Then
+			Parts := New ArrayList.Create;
+			UiSplitText(Line, UI_DELIM, Parts);
+			Kind := String.ToUpper(UiField(Parts, 0));
+			Spec := UiSpec(Kind, UiField(Parts, 1), UiField(Parts, 2),
+				UiStrToInt(UiField(Parts, 3)), UiStrToInt(UiField(Parts, 4)),
+				UiStrToInt(UiField(Parts, 5)), UiStrToInt(UiField(Parts, 6)));
+			Spec.Handler := UiField(Parts, 7);
+			Val := UiField(Parts, 8);
+			If Kind = UI_CHECK Then
+				Spec.Checked := (Val = "1") Or (String.ToUpper(Val) = "TRUE");
+			End If;
+			If (Kind = UI_PROGRESS) Or (Kind = UI_TIMER) Then
+				Spec.Value := UiStrToInt(Val);
+				Spec.Min := UiStrToInt(UiField(Parts, 9));
+				Spec.Max := UiStrToInt(UiField(Parts, 10));
+			End If;
+			If (Kind = UI_MEMO) Or (Kind = UI_COMBO) Or (Kind = UI_LISTBOX) Then
+				Spec.Lines := UiFieldLines(Val);
+			End If;
+			// ключи вида Parent=<имя> можно дописывать в любое место строки (обычно в конец)
+			For J := 7 To Parts.Count - 1 Do
+				Val := UiSpecKeyValue(UiField(Parts, J), "PARENT");
+				If Val <> "" Then
+					Spec.ParentName := Val;
+				End If;
+			End For;
+			Specs.Add(Spec);
+		End If;
+	End For;
+	Return Specs;
+End Function UiSpecsFromText;
+
+// --- Сдвинуть компоновку описания по вертикали (Dy в единицах макета). Top меняется ТОЛЬКО у контролов
+//     верхнего уровня: у детей групп координаты относительные — они поедут вместе со своей группой.
+Public Sub UiShiftSpecsTop(Specs: ArrayList; Dy: Integer);
+Var
+	Spec: CUiSpec;
+	I: Integer;
+Begin
+	If IsNull(Specs) Then
+		Return;
+	End If;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		If Spec.ParentName = "" Then
+			Spec.Top := Spec.Top + Dy;
+		End If;
+	End For;
+End Sub UiShiftSpecsTop;
+
+// --- Сдвинуть и расширить «правую колонку» описания: у контролов верхнего уровня с Left >= FromX
+//     меняем Left (+Dx), а ширину (+Dw) — только у рамок GROUP; у их детей ширина (+Dw) для MEMO/EDIT
+//     и Left (+Dw) для BUTTON (кнопки остаются у правого края блока). Дети едут вместе с группой.
+Public Sub UiShiftSpecsRight(Specs: ArrayList; FromX, Dx, Dw: Integer);
+Var
+	Spec, Child: CUiSpec;
+	Shifted: ArrayList;
+	I, J: Integer;
+	Found: Boolean;
+Begin
+	If IsNull(Specs) Then
+		Return;
+	End If;
+	Shifted := New ArrayList.Create;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		If (Spec.ParentName = "") And (Spec.Left >= FromX) Then
+			Spec.Left := Spec.Left + Dx;
+			If Spec.Kind = UI_GROUP Then
+				Spec.Width := Spec.Width + Dw;
+			End If;
+			Shifted.Add(Spec.Name);
+		End If;
+	End For;
+	For I := 0 To Specs.Count - 1 Do
+		Child := Specs.Item(I) As CUiSpec;
+		Found := False;
+		If Child.ParentName <> "" Then
+			For J := 0 To Shifted.Count - 1 Do
+				If Child.ParentName = String.Trim(Shifted.Item(J) As String) Then
+					Found := True;
+				End If;
+			End For;
+		End If;
+		If Found Then
+			If (Child.Kind = UI_MEMO) Or (Child.Kind = UI_EDIT) Then
+				Child.Width := Child.Width + Dw;
+			End If;
+			If Child.Kind = UI_BUTTON Then
+				Child.Left := Child.Left + Dw;
+			End If;
+		End If;
+	End For;
+End Sub UiShiftSpecsRight;
+
+// --- Описание экрана обратно в текст (документация/сохранение в файл) ---
+Public Function UiSpecsToText(Specs: ArrayList): String;
+Var
+	Spec: CUiSpec;
+	S, Extra: String;
+	I, J: Integer;
+Begin
+	S := "# Kind;Name;Caption;Left;Top;Width;Height;Handler;Value/Lines;Min;Max" + UI_CRLF;
+	If IsNull(Specs) Then
+		Return S;
+	End If;
+	For I := 0 To Specs.Count - 1 Do
+		Spec := Specs.Item(I) As CUiSpec;
+		Extra := "";
+		If Spec.Kind = UI_CHECK Then
+			If Spec.Checked Then
+				Extra := "1";
+			End If;
+		End If;
+		If (Spec.Kind = UI_PROGRESS) Or (Spec.Kind = UI_TIMER) Then
+			Extra := Spec.Value.ToString + UI_DELIM + Spec.Min.ToString + UI_DELIM + Spec.Max.ToString;
+		End If;
+		If (Spec.Kind = UI_MEMO) Or (Spec.Kind = UI_COMBO) Or (Spec.Kind = UI_LISTBOX) Then
+			If Not IsNull(Spec.Lines) Then
+				For J := 0 To Spec.Lines.Count - 1 Do
+					If J > 0 Then
+						Extra := Extra + UI_LISTSEP;
+					End If;
+					Extra := Extra + (Spec.Lines.Item(J) As String);
+				End For;
+			End If;
+		End If;
+		S := S + Spec.Kind + UI_DELIM + Spec.Name + UI_DELIM + Spec.Caption + UI_DELIM
+			+ Spec.Left.ToString + UI_DELIM + Spec.Top.ToString + UI_DELIM
+			+ Spec.Width.ToString + UI_DELIM + Spec.Height.ToString + UI_DELIM
+			+ Spec.Handler + UI_DELIM + Extra;
+		If Spec.ParentName <> "" Then
+			S := S + UI_DELIM + "Parent=" + Spec.ParentName;     // ключ: не зависит от числа полей
+		End If;
+		S := S + UI_CRLF;
+	End For;
+	Return S;
+End Function UiSpecsToText;
+
+// --- Очистить Memo ---
+Public Function UiMemoClear(Map: SortedList; Name: String): Boolean;
+Var
+	C: Variant;
+	Mm: IMemo;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Mm := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Mm) Then
+		Return False;
+	End If;
+	Mm.Lines.Clear;
+	Return True;
+End Function UiMemoClear;
+
+// ===========================================================================
+// ДОСТУП К КОМПОНЕНТАМ ПО ИМЕНИ (без явных приведений в коде экрана)
+// ===========================================================================
+
+// --- Текст компонента (пусто, если компонента нет) ---
+Public Function UiCtlText(Map: SortedList; Name: String): String;
+Var
+	C: Variant;
+	Ctl: IControl;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return "";
+	End If;
+	Try
+		Ctl := C;                                  // Variant → IControl (неявное преобразование)
+	Except On e: Exception Do
+		Return "";
+	End Try;
+	If IsNull(Ctl) Then
+		Return "";
+	End If;
+	Return Ctl.Text;
+End Function UiCtlText;
+
+// --- Установить текст компонента. True — получилось ---
+Public Function UiSetCtlText(Map: SortedList; Name: String; Value: String): Boolean;
+Var
+	C: Variant;
+	Ctl: IControl;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Ctl := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Ctl) Then
+		Return False;
+	End If;
+	Ctl.Text := Value;
+	Return True;
+End Function UiSetCtlText;
+
+// --- Добавить строку в Memo (True — получилось) ---
+Public Function UiMemoAdd(Map: SortedList; Name: String; Line: String): Boolean;
+Var
+	C: Variant;
+	Mm: IMemo;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Mm := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Mm) Then
+		Return False;
+	End If;
+	Mm.Lines.Add(Line);
+	Return True;
+End Function UiMemoAdd;
+
+// --- Строки Memo/ComboBox/ListBox одним текстом ---
+Public Function UiCtlLinesText(Map: SortedList; Name: String): String;
+Var
+	C: Variant;
+	Mm: IMemo;
+	Cb: IComboBox;
+	Lb: IListBox;
+	Items: IStringList;
+	S: String;
+	I: Integer;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return "";
+	End If;
+	Items := Null;
+	Try
+		Mm := C;
+		If Not IsNull(Mm) Then
+			Items := Mm.Lines;
+		End If;
+	Except On e: Exception Do
+		Items := Null;
+	End Try;
+	If IsNull(Items) Then
+		Try
+			Cb := C;
+			If Not IsNull(Cb) Then
+				Items := Cb.Items;
+			End If;
+		Except On e: Exception Do
+			Items := Null;
+		End Try;
+	End If;
+	If IsNull(Items) Then
+		Try
+			Lb := C;
+			If Not IsNull(Lb) Then
+				Items := Lb.Items;
+			End If;
+		Except On e: Exception Do
+			Items := Null;
+		End Try;
+	End If;
+	If IsNull(Items) Then
+		Return "";
+	End If;
+	S := "";
+	For I := 0 To Items.Count - 1 Do
+		S := S + Items.Item(I) + UI_CRLF;
+	End For;
+	Return S;
+End Function UiCtlLinesText;
+
+// --- Установить/снять флажок ---
+Public Function UiSetChecked(Map: SortedList; Name: String; Value: Boolean): Boolean;
+Var
+	C: Variant;
+	Chk: ICheckBox;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Chk := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Chk) Then
+		Return False;
+	End If;
+	Chk.Checked := Value;
+	Return True;
+End Function UiSetChecked;
+
+// --- Состояние флажка (false, если компонента нет) ---
+Public Function UiChecked(Map: SortedList; Name: String): Boolean;
+Var
+	C: Variant;
+	Chk: ICheckBox;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Chk := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Chk) Then
+		Return False;
+	End If;
+	Return Chk.Checked;
+End Function UiChecked;
+
+// --- Положение индикатора ProgressBar ---
+Public Function UiSetProgress(Map: SortedList; Name: String; Position: Integer): Boolean;
+Var
+	C: Variant;
+	Bar: IProgressBar;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Bar := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Bar) Then
+		Return False;
+	End If;
+	Bar.Position := Position;
+	Return True;
+End Function UiSetProgress;
+
+// --- Включить/выключить таймер ---
+Public Function UiSetTimerEnabled(Map: SortedList; Name: String; Value: Boolean): Boolean;
+Var
+	C: Variant;
+	Tm: ITimer;
+Begin
+	C := UiFind(Map, Name);
+	If IsNull(C) Then
+		Return False;
+	End If;
+	Try
+		Tm := C;
+	Except On e: Exception Do
+		Return False;
+	End Try;
+	If IsNull(Tm) Then
+		Return False;
+	End If;
+	Tm.Enabled := Value;
+	Return True;
+End Function UiSetTimerEnabled;

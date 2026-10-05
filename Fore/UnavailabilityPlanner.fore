@@ -1,0 +1,1178 @@
+// ID: UNAVAILABILITYPLANNER  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: планирование недоступности системы (окно простоя).
+// Логика: задать период недоступности → найти задачи, чей прогон пересекает период
+// (в т.ч. начавшийся раньше, но по статистике ещё не закончившийся) → по каждой задаче
+// решение «не запускать» или «перепланировать» → разовые запуски после периода
+// раскладываются равномерно и выводятся как РЕДАКТИРУЕМОЕ дополнительное расписание.
+// ВАЖНО: модуль ТОЛЬКО считает и готовит план, в репозиторий ничего не пишет (запись — отдельным шагом).
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	// Решение по задаче
+	DECISION_SKIP = "SKIP";                // не запускать
+	DECISION_RESCHEDULE = "RESCHEDULE";    // перепланировать (доп. разовый запуск после простоя)
+	// Хвостовое окно (часов) после недоступности, в которое раскладываются доп. запуски
+	DEFAULT_TAIL_HOURS = 6;
+	// Минимальный шаг раскладки (секунд)
+	MIN_STEP_SECONDS = 60;
+	// Если история пуста — считаем «след» прогона равным этой длительности (секунд)
+	MIN_ASSUMED_SECONDS = 60;
+	// Предохранитель от зацикливания перебора Period.Next
+	MAX_SCAN_RUNS = 500;
+	// Дедупликация: если штатный запуск задачи наступает не позже чем через N минут после
+	// доп. разового запуска — доп. запуск не нужен (задача и так скоро отработает по расписанию)
+	DEDUP_GAP_MINUTES = 60;
+	// Сколько последних УСПЕШНЫХ прогонов учитывать при оценке средней длительности
+	DURATION_LAST_RUNS = 10;
+	// Решение «решение не принято» (служебное: строка требует ручной проверки)
+	DECISION_NONE = "";
+	DAY_SECONDS = 86400;
+	UNAVAIL_CRLF = #13 + #10;
+	// Колонки табличного представления плана (порядок = порядок столбцов ListView на форме).
+	// Идентификаторы полей (UnavailPlanColumnId) — для выгрузки в таблицу/CSV.
+	UNAVAIL_COL_TASK_ID = 0;            // TASK_ID             Строковый(255) — задание
+	UNAVAIL_COL_TASK_NAME = 1;          // TASK_NAME           Строковый(255) — задание (название)
+	UNAVAIL_COL_BA_NAME = 2;            // BA_NAME             Строковый(255) — бизнес-приложение
+	UNAVAIL_COL_RESPONSIBLE = 3;        // RESPONSIBLE_USER    Строковый(255) — ответственный
+	UNAVAIL_COL_START_TIME = 4;         // START_TIME_ORIGINAL Дата — плановое время запуска
+	UNAVAIL_COL_END_TIME = 5;           // END_TIME_ORIGINAL   Дата — плановое время окончания
+	UNAVAIL_COL_TIME_SPAN = 6;          // TIME_SPAN           Дата — длительность
+	UNAVAIL_COL_START_TIME_NEW = 7;     // START_TIME_NEW      Дата — дата нового запуска
+	// Колонки-«крестики» (переключаются пользователем): обрабатывать задачу и решение «не запускать».
+	// «Обрабатывать» = Decision ≠ DECISION_NONE; «Не запускать» = Decision = DECISION_SKIP;
+	// отметки взаимоисключающие — см. SetImpactFlags (снятие «Не запускать» возвращает «Обрабатывать»).
+	UNAVAIL_COL_PROCESS = 8;            // PROCESSED      Строковый(1) — «обрабатывать задачу»
+	UNAVAIL_COL_SKIP = 9;               // SKIP_FLAG      Строковый(1) — «не запускать»
+	UNAVAIL_PLAN_COLUMNS = 10;
+	// Символы «крестика» в таблице плана: ListView не умеет чекбоксы в произвольной колонке,
+	// поэтому значения показываются символами, а переключаются кликом по ячейке (HitTest) или меню.
+	UNAVAIL_MARK_ON = "✔";
+	UNAVAIL_MARK_OFF = "—";
+	// Предел числа слоёв (защита от «слои = 500» при автосчёте по желаемому окончанию)
+	UNAVAIL_MAX_LAYERS = 50;
+	// --- Бизнес-приложение (BA_NAME): поднимаемся по владельцам задачи ---
+	// Класс «Бизнес-приложение»: в 10.8 это MetabaseObjectMetaclass.DBA_CLASS = 10496
+	// (в перечислениях 9.9 отсутствует, поэтому сравнение идёт с числовым кодом).
+	BA_CLASS_ID = 10496;
+	BA_MAX_PARENT_STEPS = 32;           // предохранитель обхода владельцев
+	// --- Таблица ответственных RESPONSIBLE_FOR_TASK (идентификатор = native_name) ---
+	RESP_TABLE_ID = "RESPONSIBLE_FOR_TASK";    // ← таблица ответственных (идентификатор = native_name)
+	// База данных, в которой лежит таблица ответственных (чтение — SQL-курсором, см. LoadResponsibleTableSql)
+	RESP_DB_ID = "CONNECT_SNG_DB";
+	RESP_FIELD_TASK = "TASK_ID";               // ← поле: id задачи (как объекта репозитория)
+	RESP_FIELD_BA = "BA_NAME";                 // ← поле: бизнес-приложение
+	RESP_FIELD_RESPONSIBLE = "RESPONSIBLE";    // ← поле: имя ответственного
+	RESP_FIELD_MAIL = "MAIL";                  // ← поле: почтовый адрес ответственного
+	// Подписи решений для сводки
+	DECISION_NONE_TEXT = "—";
+	DECISION_SKIP_TEXT = "не запускать";
+	DECISION_RESCHEDULE_TEXT = "перепланировать";
+
+// --- Окно недоступности системы ---
+Class CUnavailWindow: Object
+	Public Start: DateTime;
+	Public Stop: DateTime;
+	Public TailHours: Integer;
+End Class CUnavailWindow;
+
+// --- Затронутая задача + принятое решение ---
+Class CUnavailImpact: Object
+	Public Descriptor: IMetabaseObjectDescriptor;
+	Public Id: String;
+	Public Name: String;
+	Public BusinessApp: String;     // BA_NAME — бизнес-приложение (см. GetTaskBusinessAppName)
+	Public ResponsibleUser: String; // RESPONSIBLE_USER — ответственный (UserTag задачи)
+	Public RunStart: DateTime;      // START_TIME_ORIGINAL — плановое время запуска (по периоду)
+	Public RunFinish: DateTime;     // END_TIME_ORIGINAL — плановое время окончания (старт + длительность)
+	Public AvgSeconds: Double;      // TIME_SPAN — длительность прогона (средняя из истории)
+	Public Decision: String;        // DECISION_SKIP / DECISION_RESCHEDULE
+	Public NewStart: DateTime;      // START_TIME_NEW — дата нового запуска (для RESCHEDULE)
+	Public NextRegularRun: DateTime; // первый ШТАТНЫЙ запуск после окна (для дедупликации)
+	Public HasNextRegularRun: Boolean;
+	Public DedupSkipped: Boolean;   // доп. запуск подавлен: штатный запуск наступает рядом
+	Public ScanLimited: Boolean;    // период просчитан не полностью (лимит итераций) — проверить вручную
+	Public Note: String;            // примечание для пользователя (причина решения)
+	Public SortDone: Boolean;       // служебное (сортировка расписания)
+End Class CUnavailImpact;
+
+// --- Строка таблицы ответственных RESPONSIBLE_FOR_TASK ---
+Class CTaskResponsible: Object
+	Public TaskId: String;          // id задачи (как объекта репозитория)
+	Public BaName: String;          // бизнес-приложение
+	Public ResponsibleUser: String; // имя ответственного
+	Public Mail: String;            // почтовый адрес ответственного (MAIL)
+End Class CTaskResponsible;
+
+// --- Средняя длительность выполнения задачи по истории (секунды) ---
+// --- Средняя длительность УСПЕШНЫХ прогонов задачи (последние DURATION_LAST_RUNS) ---
+// Сбои и «зависшие» прогоны не учитываются: иначе прогноз окончания раздувается и задача
+// без причины попадает в перепланирование. Истории нет — возвращаем 0 (на форме это «—»).
+Function GetUnavailAvgSeconds(Task: IScheduledTask): Double;
+Var
+	Results: IScheduledTaskResults;
+	Res: IScheduledTaskResult;
+	TotalSeconds: Double;
+	Cnt, I: Integer;
+Begin
+	// История может быть недоступна: возвращаем 0, а не исключение (вызывается из обработчиков формы)
+	Results := Null;
+	Try
+		Results := Task.GetResults;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: история задачи недоступна — " + e.Message);
+	End Try;
+	TotalSeconds := 0;
+	Cnt := 0;
+	If IsNull(Results) Then
+		Return 0;
+	End If;
+	Try
+		For I := 0 To Results.Count - 1 Do
+			If Cnt < DURATION_LAST_RUNS Then
+				Res := Results.Item(Results.Count - 1 - I);      // идём от последних прогонов
+				If Res.Finished And Res.Succeeded Then
+					TotalSeconds := TotalSeconds + DateTime.Difference(Res.StartDateTime, Res.FinishDateTime).TotalSeconds;
+					Cnt := Cnt + 1;
+				End If;
+			End If;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: разбор истории задачи — " + e.Message);
+		Cnt := 0;
+	End Try;
+	If Cnt = 0 Then
+		Return 0;
+	End If;
+	Return TotalSeconds / (Cnt As Double);
+End Function GetUnavailAvgSeconds;
+
+// --- Задачи, чей прогон пересекает окно недоступности ---
+// Прогон считается затронутым, если RunStart < WindowEnd и RunFinish > WindowStart.
+// Перебор начинается раньше окна на (след прогона + сутки) — так ловится задача,
+// стартовавшая ДО недоступности, но по статистике ещё выполняющаяся в период простоя.
+// Для каждой затронутой задачи считается первый ШТАТНЫЙ запуск после окна — он нужен, чтобы
+// не делать лишний разовый запуск, если задача и так скоро отработает по расписанию.
+Function CollectAffectedTasks(Containers: ArrayList; WindowStart: DateTime; WindowEnd: DateTime): ArrayList;
+Var
+	Tasks: ArrayList;                         // дескрипторы задач ВСЕХ выбранных контейнеров (без дублей)
+	Task: IScheduledTask;
+	TaskDesc: IMetabaseObjectDescriptor;      // дескриптор объекта РЕПОЗИТОРИЯ (для бизнес-приложения)
+	RepoDesc: IMetabaseObjectDescriptor;
+	Props: IScheduledTaskProperties;
+	Period: IScheduledTaskPeriod;
+	Impact: CUnavailImpact;
+	Result: ArrayList;
+	RespIndex: SortedList;
+	RespRow: CTaskResponsible;
+	AvgSeconds: Double;
+	AvgSec, FootSeconds, LookbackSeconds: Integer;
+	RunStart, RunFinish, NextRun: DateTime;
+	Guard, NextGuard: Integer;
+	Scanning, Found: Boolean;
+	I: Integer;
+Begin
+	Result := New ArrayList.Create;
+	If IsNull(Containers) Then
+		Return Result;
+	End If;
+
+	// задачи ВСЕХ выбранных контейнеров: задача, попавшая в два контейнера (одинаковый Id),
+	// берётся один раз — иначе в плане и отчётах появились бы дубли строк
+	Tasks := CollectTasksFromContainers(Containers);
+	// таблицу ответственных читаем один раз и строим индекс по Id задачи (поиск без перебора)
+	RespIndex := LoadResponsibleIndex(RESP_TABLE_ID);
+	For I := 0 To Tasks.Count - 1 Do
+		Try
+			TaskDesc := Tasks.Item(I) As IMetabaseObjectDescriptor;
+			Task := TaskDesc.Bind As IScheduledTask;
+			// дескриптор объекта репозитория (нужен для бизнес-приложения и как «паспорт» строки плана);
+			// объект не открылся — работаем с контейнерным, как раньше
+			RepoDesc := TaskRepoDescriptor(TaskDesc.Id);
+			If Not IsNull(RepoDesc) Then
+				TaskDesc := RepoDesc;
+			End If;
+			Props := Task.Properties;
+			If Not IsNull(Props) Then
+				Period := Props.Period;
+				If Not IsNull(Period) Then
+					AvgSeconds := GetUnavailAvgSeconds(Task);
+					AvgSec := Double.RoundInt(AvgSeconds);      // секунды приводим к целым
+					FootSeconds := AvgSec;
+					If FootSeconds < MIN_ASSUMED_SECONDS Then
+						FootSeconds := MIN_ASSUMED_SECONDS;
+					End If;
+					LookbackSeconds := FootSeconds + DAY_SECONDS;
+					RunStart := Period.Next(DateTime.AddSeconds(WindowStart, -LookbackSeconds));
+					Guard := 0;
+					Scanning := True;
+					Found := False;
+					While Scanning Do
+						Scanning := False;
+						If RunStart <= WindowEnd Then
+							RunFinish := DateTime.AddSeconds(RunStart, FootSeconds);
+							If RunFinish > WindowStart Then
+								Found := True;
+								Impact := New CUnavailImpact.Create;
+								Impact.Descriptor := TaskDesc;
+								Impact.Id := TaskDesc.Id;
+								Impact.Name := TaskDesc.Name;
+								Impact.BusinessApp := GetTaskBusinessAppName(TaskDesc);
+								RespRow := FindTaskResponsibleInIndex(RespIndex, TaskDesc.Id);
+								Impact.ResponsibleUser := "";
+								If Not IsNull(RespRow) Then
+									Impact.ResponsibleUser := RespRow.ResponsibleUser;
+								End If;
+								Impact.RunStart := RunStart;
+								Impact.RunFinish := RunFinish;
+								Impact.AvgSeconds := AvgSeconds;
+								Impact.Decision := DECISION_RESCHEDULE;
+								Impact.NewStart := RunStart;
+								// первый штатный запуск ПОСЛЕ окна — для дедупликации доп. запуска
+								NextRun := Period.Next(WindowEnd);
+								NextGuard := 0;
+								While (NextRun <= WindowEnd) And (NextGuard < MAX_SCAN_RUNS) Do
+									NextRun := Period.Next(NextRun);
+									NextGuard := NextGuard + 1;
+								End While;
+								Impact.HasNextRegularRun := NextRun > WindowEnd;
+								Impact.NextRegularRun := NextRun;
+								Impact.SortDone := False;
+								Result.Add(Impact);
+							Else
+								RunStart := Period.Next(RunStart);
+								Guard := Guard + 1;
+								If Guard < MAX_SCAN_RUNS Then
+									Scanning := True;
+								End If;
+							End If;
+						End If;
+					End While;
+					// период «разрежён»: за MAX_SCAN_RUNS итераций прогон в окне не найден —
+					// показываем задачу без решения, чтобы её проверили руками (не теряем молча)
+					If (Not Found) And (Guard >= MAX_SCAN_RUNS) Then
+						Impact := New CUnavailImpact.Create;
+						Impact.Descriptor := TaskDesc;
+						Impact.Id := TaskDesc.Id;
+						Impact.Name := TaskDesc.Name;
+						Impact.BusinessApp := GetTaskBusinessAppName(TaskDesc);
+						RespRow := FindTaskResponsibleInIndex(RespIndex, TaskDesc.Id);
+						Impact.ResponsibleUser := "";
+						If Not IsNull(RespRow) Then
+							Impact.ResponsibleUser := RespRow.ResponsibleUser;
+						End If;
+						Impact.RunStart := WindowEnd;
+						Impact.RunFinish := WindowEnd;
+						Impact.AvgSeconds := AvgSeconds;
+						Impact.Decision := DECISION_NONE;
+						Impact.NewStart := WindowEnd;
+						Impact.ScanLimited := True;
+						Impact.Note := "период просчитан не полностью (лимит " + MAX_SCAN_RUNS.ToString
+							+ " итераций) — проверьте расписание вручную";
+						Impact.SortDone := False;
+						Result.Add(Impact);
+					End If;
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планирование недоступности: задача "
+				+ (Tasks.Item(I) As IMetabaseObjectDescriptor).Id + " — " + e.Message);
+		End Try;
+	End For;
+	Return Result;
+End Function CollectAffectedTasks;
+
+// --- Равномерно разложить «перепланируемые» разовые запуски после окна недоступности ---
+// Порядок LPT (длинные — вперёд) задаётся через SortedList по рангу (как в TaskPlanner.BuildPlan),
+// затем NewStart = WindowEnd + i * шаг. Возвращает упорядоченное по времени расписание (ArrayList).
+Function DistributeSchedule(Impacts: ArrayList; WindowEnd: DateTime; TailHours: Integer): ArrayList;
+Var
+	Schedule: ArrayList;
+	Impact, Other: CUnavailImpact;
+	ByPlan: SortedList;
+	TailSeconds, StepSeconds, OffsetSeconds, SumSeconds, GapSeconds: Integer;
+	Rank, I, J: Integer;
+	IsLonger, IsTie: Boolean;
+Begin
+	Schedule := New ArrayList.Create;
+	ByPlan := New SortedList.Create;
+	SumSeconds := 0;
+
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		If Impact.Decision = DECISION_RESCHEDULE Then
+			Rank := 0;
+			For J := 0 To Impacts.Count - 1 Do
+				Other := Impacts.Item(J) As CUnavailImpact;
+				If (J <> I) And (Other.Decision = DECISION_RESCHEDULE) Then
+					IsLonger := Other.AvgSeconds > Impact.AvgSeconds;
+					IsTie := (Other.AvgSeconds = Impact.AvgSeconds) And (J < I);
+					If IsLonger Or IsTie Then
+						Rank := Rank + 1;
+					End If;
+				End If;
+			End For;
+			ByPlan.Add(Rank, Impact);
+			SumSeconds := SumSeconds + Double.RoundInt(Impact.AvgSeconds);
+		End If;
+	End For;
+
+	If ByPlan.Count = 0 Then
+		Return Schedule;
+	End If;
+
+	TailSeconds := TailHours * 3600;
+	If TailSeconds <= 0 Then
+		TailSeconds := SumSeconds;
+	End If;
+	StepSeconds := Double.RoundInt((TailSeconds As Double) / (ByPlan.Count As Double));
+	If StepSeconds < MIN_STEP_SECONDS Then
+		StepSeconds := MIN_STEP_SECONDS;
+	End If;
+
+	OffsetSeconds := 0;
+	For I := 0 To ByPlan.Count - 1 Do
+		Impact := ByPlan.GetByIndex(I) As CUnavailImpact;
+		Impact.NewStart := DateTime.AddSeconds(WindowEnd, OffsetSeconds);
+		OffsetSeconds := OffsetSeconds + StepSeconds;
+	End For;
+
+	// Дедупликация: если до штатного запуска задачи осталось не больше DEDUP_GAP_MINUTES минут,
+	// разовый запуск не нужен — задача и так отработает по расписанию (иначе будет двойной прогон).
+	For I := 0 To ByPlan.Count - 1 Do
+		Impact := ByPlan.GetByIndex(I) As CUnavailImpact;
+		If Impact.HasNextRegularRun Then
+			GapSeconds := Double.RoundInt(DateTime.Difference(Impact.NewStart, Impact.NextRegularRun).TotalSeconds);
+			If GapSeconds <= (DEDUP_GAP_MINUTES * 60) Then
+				Impact.Decision := DECISION_SKIP;
+				Impact.DedupSkipped := True;
+				Impact.Note := "подавлен: штатный запуск " + Impact.NextRegularRun.ToString;
+			End If;
+		End If;
+	End For;
+
+	Schedule := GetRescheduleSchedule(Impacts);
+	Return Schedule;
+End Function DistributeSchedule;
+
+// --- Упорядочить доп. расписание по возрастанию времени (для показа пользователю) ---
+Function GetRescheduleSchedule(Impacts: ArrayList): ArrayList;
+Var
+	Order: ArrayList;
+	Impact: CUnavailImpact;
+	More, Found: Boolean;
+	BestIdx, I: Integer;
+	BestNew: DateTime;
+Begin
+	Order := New ArrayList.Create;
+	For I := 0 To Impacts.Count - 1 Do
+		(Impacts.Item(I) As CUnavailImpact).SortDone := False;
+	End For;
+
+	More := True;
+	While More Do
+		Found := False;
+		BestIdx := -1;
+		For I := 0 To Impacts.Count - 1 Do
+			Impact := Impacts.Item(I) As CUnavailImpact;
+			If (Impact.Decision = DECISION_RESCHEDULE) And (Not Impact.SortDone) Then
+				If (Not Found) Or (Impact.NewStart < BestNew) Then
+					Found := True;
+					BestIdx := I;
+					BestNew := Impact.NewStart;
+				End If;
+			End If;
+		End For;
+		More := Found;
+		If Found Then
+			Impact := Impacts.Item(BestIdx) As CUnavailImpact;
+			Impact.SortDone := True;
+			Order.Add(Impact);
+		End If;
+	End While;
+	Return Order;
+End Function GetRescheduleSchedule;
+
+// --- Текстовая сводка: затронутые задачи и принятые решения ---
+Function UnavailabilityPlanText(Impacts: ArrayList; Window: CUnavailWindow): String;
+Var
+	Impact: CUnavailImpact;
+	S: String;
+	I, ReschedCount, SkipCount, DedupCount, ScanCount: Integer;
+Begin
+	ReschedCount := 0;
+	SkipCount := 0;
+	DedupCount := 0;
+	ScanCount := 0;
+	S := "Период недоступности: " + Window.Start.ToString + " — " + Window.Stop.ToString + UNAVAIL_CRLF;
+	S := S + "Затронуто задач: " + Impacts.Count.ToString + UNAVAIL_CRLF;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		If Impact.Decision = DECISION_RESCHEDULE Then
+			ReschedCount := ReschedCount + 1;
+		Else
+			SkipCount := SkipCount + 1;
+		End If;
+		If Impact.DedupSkipped Then
+			DedupCount := DedupCount + 1;
+		End If;
+		If Impact.ScanLimited Then
+			ScanCount := ScanCount + 1;
+		End If;
+		S := S + Impact.Id + " | прогноз " + Impact.RunStart.ToString + " — " + Impact.RunFinish.ToString
+			+ " | " + UnavailDecisionText(Impact.Decision);
+		If Impact.Decision = DECISION_RESCHEDULE Then
+			S := S + " -> " + Impact.NewStart.ToString;
+		End If;
+		If Impact.Note <> "" Then
+			S := S + " (" + Impact.Note + ")";
+		End If;
+		S := S + UNAVAIL_CRLF;
+	End For;
+	S := S + "Итого: перепланировать " + ReschedCount.ToString + ", не запускать " + SkipCount.ToString
+		+ " (из них подавлено — штатный запуск рядом: " + DedupCount.ToString + ")"
+		+ ", требует ручной проверки: " + ScanCount.ToString + UNAVAIL_CRLF;
+	Return S;
+End Function UnavailabilityPlanText;
+
+// --- Текстовая сводка: дополнительное расписание разовых запусков (редактируемое) ---
+Function AdditionalScheduleText(Impacts: ArrayList): String;
+Var
+	Schedule: ArrayList;
+	Impact: CUnavailImpact;
+	S: String;
+	LineNo, I: Integer;
+Begin
+	Schedule := GetRescheduleSchedule(Impacts);
+	S := "Дополнительное расписание (разовые запуски после недоступности):" + UNAVAIL_CRLF;
+	If Schedule.Count = 0 Then
+		S := S + "  (пусто)" + UNAVAIL_CRLF;
+		Return S;
+	End If;
+	For I := 0 To Schedule.Count - 1 Do
+		Impact := Schedule.Item(I) As CUnavailImpact;
+		LineNo := I + 1;
+		S := S + LineNo.ToString + ") " + Impact.Id + " — " + Impact.NewStart.ToString + UNAVAIL_CRLF;
+	End For;
+	Return S;
+End Function AdditionalScheduleText;
+
+// --- Табличное представление плана (колонки ListView/DataGrid на форме) ---
+// Схема полей (порядок = порядок столбцов):
+//   TASK_ID / TASK_NAME / BA_NAME / RESPONSIBLE_USER               — Строковый(255)
+//   START_TIME_ORIGINAL / END_TIME_ORIGINAL / TIME_SPAN / START_TIME_NEW — Дата
+
+// Идентификатор поля колонки (заголовок CSV/выгрузки в таблицу)
+Function UnavailPlanColumnId(Column: Integer): String;
+Begin
+	If Column = UNAVAIL_COL_TASK_ID Then
+		Return "TASK_ID";
+	End If;
+	If Column = UNAVAIL_COL_TASK_NAME Then
+		Return "TASK_NAME";
+	End If;
+	If Column = UNAVAIL_COL_BA_NAME Then
+		Return "BA_NAME";
+	End If;
+	If Column = UNAVAIL_COL_RESPONSIBLE Then
+		Return "RESPONSIBLE_USER";
+	End If;
+	If Column = UNAVAIL_COL_START_TIME Then
+		Return "START_TIME_ORIGINAL";
+	End If;
+	If Column = UNAVAIL_COL_END_TIME Then
+		Return "END_TIME_ORIGINAL";
+	End If;
+	If Column = UNAVAIL_COL_TIME_SPAN Then
+		Return "TIME_SPAN";
+	End If;
+	If Column = UNAVAIL_COL_START_TIME_NEW Then
+		Return "START_TIME_NEW";
+	End If;
+	If Column = UNAVAIL_COL_PROCESS Then
+		Return "PROCESSED";
+	End If;
+	If Column = UNAVAIL_COL_SKIP Then
+		Return "SKIP_FLAG";
+	End If;
+	Return "";
+End Function UnavailPlanColumnId;
+
+// Тип поля колонки (как в схеме таблицы). TIME_SPAN — длительность ЧЧ:ММ:СС (в ТЗ был «Дата» — опечатка)
+Function UnavailPlanColumnType(Column: Integer): String;
+Begin
+	If Column <= UNAVAIL_COL_RESPONSIBLE Then
+		Return "Строковый(255)";
+	End If;
+	If Column = UNAVAIL_COL_TIME_SPAN Then
+		Return "Строковый(8)";
+	End If;
+	If (Column = UNAVAIL_COL_PROCESS) Or (Column = UNAVAIL_COL_SKIP) Then
+		Return "Строковый(1)";                   // «крестик» / «—»
+	End If;
+	Return "Дата";
+End Function UnavailPlanColumnType;
+
+// Подпись (заголовок) столбца таблицы плана — для настройки колонок ListView
+Function UnavailPlanColumnCaption(Column: Integer): String;
+Begin
+	If Column = UNAVAIL_COL_TASK_ID Then
+		Return "Задание";
+	End If;
+	If Column = UNAVAIL_COL_TASK_NAME Then
+		Return "Задание - название";
+	End If;
+	If Column = UNAVAIL_COL_BA_NAME Then
+		Return "Бизнес-приложение";
+	End If;
+	If Column = UNAVAIL_COL_RESPONSIBLE Then
+		Return "Ответственный";
+	End If;
+	If Column = UNAVAIL_COL_START_TIME Then
+		Return "Плановое Время запуска";
+	End If;
+	If Column = UNAVAIL_COL_END_TIME Then
+		Return "Плановое время окончания";
+	End If;
+	If Column = UNAVAIL_COL_TIME_SPAN Then
+		Return "Длительность";
+	End If;
+	If Column = UNAVAIL_COL_START_TIME_NEW Then
+		Return "Дата нового запуска";
+	End If;
+	If Column = UNAVAIL_COL_PROCESS Then
+		Return "Обрабатывать";
+	End If;
+	If Column = UNAVAIL_COL_SKIP Then
+		Return "Не запускать";
+	End If;
+	Return "";
+End Function UnavailPlanColumnCaption;
+
+// Ширина колонки таблицы плана (значения по умолчанию — для создания колонок кодом,
+// см. IListViewColumns.Add: IListViewColumn; ширина в пикселях — IListViewColumn.Width).
+// Сумма ФИКСИРОВАННЫХ ширин подобрана так, чтобы таблица (≈912 px) не требовала горизонтальной
+// прокрутки: растягивается только «Задание - название» — иначе клик по ячейке попадёт в другую
+// колонку (координаты X считаются от левого края списка, см. PlanTableOnClick на форме).
+Function UnavailPlanColumnWidth(Column: Integer): Integer;
+Begin
+	If Column = UNAVAIL_COL_TASK_ID Then
+		Return 70;
+	End If;
+	If Column = UNAVAIL_COL_TASK_NAME Then
+		Return 150;                              // растягивается (Stretch = True)
+	End If;
+	If Column = UNAVAIL_COL_BA_NAME Then
+		Return 110;
+	End If;
+	If Column = UNAVAIL_COL_RESPONSIBLE Then
+		Return 105;
+	End If;
+	If Column = UNAVAIL_COL_START_TIME Then
+		Return 100;
+	End If;
+	If Column = UNAVAIL_COL_END_TIME Then
+		Return 100;
+	End If;
+	If Column = UNAVAIL_COL_TIME_SPAN Then
+		Return 60;
+	End If;
+	If Column = UNAVAIL_COL_START_TIME_NEW Then
+		Return 95;
+	End If;
+	If Column = UNAVAIL_COL_PROCESS Then
+		Return 55;                               // «крестик» — узкая колонка
+	End If;
+	If Column = UNAVAIL_COL_SKIP Then
+		Return 55;
+	End If;
+	Return 60;
+End Function UnavailPlanColumnWidth;
+
+// Число двумя разрядами (для формата ЧЧ:ММ:СС)
+Function TwoDigits(V: Integer): String;
+Begin
+	If V < 10 Then
+		Return "0" + V.ToString;
+	End If;
+	Return V.ToString;
+End Function TwoDigits;
+
+// TIME_SPAN: длительность в формате ЧЧ:ММ:СС (секунды — целые)
+Function UnavailDurationText(Seconds: Integer): String;
+Var
+	Span: TimeSpan;
+Begin
+	If Seconds <= 0 Then
+		Return "00:00:00";
+	End If;
+	Span := TimeSpan.FromSeconds(Seconds As Double);
+	Return TwoDigits(Span.Hours) + ":" + TwoDigits(Span.Minutes) + ":" + TwoDigits(Span.Seconds);
+End Function UnavailDurationText;
+
+// --- Дескриптор задачи В РЕПОЗИТОРИИ по Id задачи ---
+// ⚠ Дескрипторы из IScheduledTasksContainer.Tasks («внутри контейнера») имеют свою цепочку
+// владельцев, которая НЕ ведёт к объектам дерева репозитория: по ним не находится бизнес-приложение
+// (GetTaskBusinessAppName обходит Parent). Поэтому для таких мест берём объект репозитория по Id.
+// Объект не открылся — возвращаем Null, вызывающий код использует исходный (контейнерный) дескриптор.
+Function TaskRepoDescriptor(TaskId: String): IMetabaseObjectDescriptor;
+Var
+	Desc: IMetabaseObjectDescriptor;
+Begin
+	If String.Trim(TaskId) = "" Then
+		Return Null;
+	End If;
+	Desc := Null;
+	Try
+		Desc := MetabaseClass.Active.ItemById(TaskId);
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: задача «" + TaskId + "» в репозитории не открылась — " + e.Message);
+		Desc := Null;
+	End Try;
+	Return Desc;
+End Function TaskRepoDescriptor;
+
+// BA_NAME — бизнес-приложение задачи: поднимаемся по владельцам (Parent) от задачи,
+// пока не встретим объект класса «Бизнес-приложение» (Desc.ClassId = BA_CLASS_ID = 10496).
+// ⚠ TaskDesc ДОЛЖЕН быть дескриптором объекта РЕПОЗИТОРИЯ (см. TaskRepoDescriptor): у дескриптора
+// «внутри контейнера» владельцы другие, и бизнес-приложение по нему не находится.
+Function GetTaskBusinessAppName(TaskDesc: IMetabaseObjectDescriptor): String;
+Var
+	Cur: IMetabaseObjectDescriptor;
+	Guard: Integer;
+	GoOn: Boolean;
+Begin
+	If IsNull(TaskDesc) Then
+		Return "";
+	End If;
+	Cur := TaskDesc.Parent;
+	Guard := 0;
+	GoOn := Not IsNull(Cur);
+	While GoOn Do
+		If Cur.ClassId = BA_CLASS_ID Then
+			Return Cur.Name;
+		End If;
+		Guard := Guard + 1;
+		If Guard >= BA_MAX_PARENT_STEPS Then
+			GoOn := False;                 // предохранитель: не ушли в бесконечный обход
+		Else
+			Try
+				Cur := Cur.Parent;         // у корневого объекта владельца может не быть
+			Except On e: Exception Do
+				Cur := Null;
+			End Try;
+			GoOn := Not IsNull(Cur);
+		End If;
+	End While;
+	Return "";
+End Function GetTaskBusinessAppName;
+
+// --- Таблица ответственных RESPONSIBLE_FOR_TASK: чтение ЧЕРЕЗ SQL (курсор) ---
+// Таблица НЕ открывается как объект репозитория (IDatasetInstance): берём соединение с базой
+// (IDatabaseInstance → ISecurityConnection), создаём команду и читаем её КУРСОРОМ — как в
+// UnavailabilityStore (LoadUnavailRecords). Поля читаются ПО НОМЕРУ в порядке select.
+// WithMail = False — запрос без колонки MAIL (база, где миграция ещё не выполнена).
+Function LoadResponsibleTableSql(TableId: String; WithMail: Boolean): ArrayList;
+Var
+	MB: IMetabase;
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	Row: CTaskResponsible;
+	Sql: String;
+	Fields: Integer;
+Begin
+	Rows := New ArrayList.Create;
+	If TableId = "" Then
+		Return Rows;
+	End If;
+	Sql := "select " + RESP_FIELD_TASK + ", " + RESP_FIELD_BA + ", " + RESP_FIELD_RESPONSIBLE;
+	If WithMail Then
+		Sql := Sql + ", " + RESP_FIELD_MAIL;
+	End If;
+	Sql := Sql + " from " + TableId;
+	Try
+		MB := MetabaseClass.Active;
+		Db := MB.ItemById(RESP_DB_ID).Open(Null) As IDatabaseInstance;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;                 // для select — курсор (Execute — без выборки)
+		Fields := Cursor.Fields.Count;
+		While Not Cursor.Eof Do
+			Row := New CTaskResponsible.Create;
+			Row.TaskId := String.Trim(UnvVarToStr(Cursor.Fields.Item(0).Value));
+			Row.BaName := String.Trim(UnvVarToStr(Cursor.Fields.Item(1).Value));
+			Row.ResponsibleUser := String.Trim(UnvVarToStr(Cursor.Fields.Item(2).Value));
+			Row.Mail := "";
+			If Fields > 3 Then
+				Row.Mail := String.Trim(UnvVarToStr(Cursor.Fields.Item(3).Value));
+			End If;
+			Rows.Add(Row);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение ответственных — " + e.Message + " [" + Sql + "]");
+		Rows.Clear;
+	End Try;
+	Return Rows;
+End Function LoadResponsibleTableSql;
+
+// --- Таблица ответственных RESPONSIBLE_FOR_TASK (Id задачи, БП, ответственный, почта) ---
+// Ошибки (нет базы/таблицы) не должны прерывать построение плана: возвращается пустой список.
+Function LoadResponsibleTable(TableId: String): ArrayList;
+Var
+	Rows, LegacyRows: ArrayList;
+Begin
+	Rows := LoadResponsibleTableSql(TableId, True);       // обычный случай: колонка MAIL есть
+	If Rows.Count = 0 Then
+		// либо в таблице нет строк, либо колонка MAIL ещё не добавлена миграцией — пробуем без неё
+		LegacyRows := LoadResponsibleTableSql(TableId, False);
+		If LegacyRows.Count > 0 Then
+			Return LegacyRows;
+		End If;
+	End If;
+	Return Rows;
+End Function LoadResponsibleTable;
+
+// --- Строка таблицы ответственных по Id задачи ---
+Function FindTaskResponsible(Rows: ArrayList; TaskId: String): CTaskResponsible;
+Var
+	I: Integer;
+Begin
+	If IsNull(Rows) Then
+		Return Null;
+	End If;
+	If TaskId = "" Then
+		Return Null;
+	End If;
+	For I := 0 To Rows.Count - 1 Do
+		If (Rows.Item(I) As CTaskResponsible).TaskId = TaskId Then
+			Return Rows.Item(I) As CTaskResponsible;
+		End If;
+	End For;
+	Return Null;
+End Function FindTaskResponsible;
+
+// --- Ранее использованные ответственные: уникальные значения, по алфавиту (для меню выбора) ---
+// Значения берутся из таблицы ответственных (то же чтение, что и для плана). SortedList держит
+// ключи отсортированными, поэтому список сразу по алфавиту (как ByPlan.GetByIndex в TaskPlanner).
+Function LoadResponsibleNames(TableId: String): ArrayList;
+Var
+	Rows: ArrayList;
+	Row: CTaskResponsible;
+	Sorted: SortedList;
+	Names: ArrayList;
+	Name: String;
+	I: Integer;
+Begin
+	Names := New ArrayList.Create;
+	If TableId = "" Then
+		Return Names;
+	End If;
+	Rows := LoadResponsibleTable(TableId);
+	Sorted := New SortedList.Create;
+	For I := 0 To Rows.Count - 1 Do
+		Row := Rows.Item(I) As CTaskResponsible;
+		Name := String.Trim(Row.ResponsibleUser);
+		If (Name <> "") And (Sorted.IndexOfKey(Name) < 0) Then
+			Sorted.Add(Name, Name);
+		End If;
+	End For;
+	For I := 0 To Sorted.Count - 1 Do
+		Names.Add(Sorted.GetByIndex(I) As String);
+	End For;
+	Return Names;
+End Function LoadResponsibleNames;
+
+// --- Почта ответственного по ФИО (подстановка при выборе ранее использованного) ---
+// Ищем в той же таблице, откуда берётся список имён для меню; берём ПОСЛЕДНЕЕ непустое значение
+// MAIL по этому ФИО (у одного человека может быть несколько строк — по задачам).
+// Возврат "" — почта не найдена (тогда строка ответственного сохранится без адреса).
+Function LoadResponsibleMail(TableId: String; Responsible: String): String;
+Var
+	Rows: ArrayList;
+	Row: CTaskResponsible;
+	Name, Mail: String;
+	I: Integer;
+Begin
+	Mail := "";
+	Name := String.Trim(Responsible);
+	If (TableId = "") Or (Name = "") Then
+		Return "";
+	End If;
+	Try
+		Rows := LoadResponsibleTable(TableId);
+		For I := 0 To Rows.Count - 1 Do
+			Row := Rows.Item(I) As CTaskResponsible;
+			If String.Trim(Row.ResponsibleUser) = Name Then
+				If String.Trim(Row.Mail) <> "" Then
+					Mail := String.Trim(Row.Mail);
+				End If;
+			End If;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: почта ответственного «" + Name + "» — " + e.Message);
+		Mail := "";
+	End Try;
+	Return Mail;
+End Function LoadResponsibleMail;
+
+// --- Индекс таблицы ответственных: Id задачи → строка (поиск без перебора всего списка) ---
+Function LoadResponsibleIndex(TableId: String): SortedList;
+Var
+	Rows: ArrayList;
+	Row: CTaskResponsible;
+	Index: SortedList;
+	I: Integer;
+Begin
+	Index := New SortedList.Create;
+	Rows := LoadResponsibleTable(TableId);
+	For I := 0 To Rows.Count - 1 Do
+		Row := Rows.Item(I) As CTaskResponsible;
+		If Row.TaskId <> "" Then
+			If Index.IndexOfKey(Row.TaskId) < 0 Then      // у задачи берём первого ответственного
+				Index.Add(Row.TaskId, Row);
+			End If;
+		End If;
+	End For;
+	Return Index;
+End Function LoadResponsibleIndex;
+
+// --- Ответственный по Id задачи (поиск в индексе: O(log n) вместо перебора) ---
+Function FindTaskResponsibleInIndex(Index: SortedList; TaskId: String): CTaskResponsible;
+Var
+	Pos: Integer;
+Begin
+	If IsNull(Index) Then
+		Return Null;
+	End If;
+	Pos := Index.IndexOfKey(TaskId);
+	If Pos < 0 Then
+		Return Null;
+	End If;
+	Return Index.GetByIndex(Pos) As CTaskResponsible;
+End Function FindTaskResponsibleInIndex;
+
+// Подпись решения для пользователя
+Function UnavailDecisionText(Decision: String): String;
+Begin
+	If Decision = DECISION_SKIP Then
+		Return DECISION_SKIP_TEXT;
+	End If;
+	If Decision = DECISION_RESCHEDULE Then
+		Return DECISION_RESCHEDULE_TEXT;
+	End If;
+	Return DECISION_NONE_TEXT;
+End Function UnavailDecisionText;
+
+// --- «Крестики» таблицы плана: обработка задачи и решение «не запускать» ---
+// «Обрабатывать» = задача участвует в плане (Decision ≠ NONE); «Не запускать» = Decision = SKIP.
+// Отметки связаны, как радиокнопки: поставили «не запускать» — «обрабатывать» снимается;
+// сняли «не запускать» — «обрабатывать» возвращается (перепланирование).
+Function ImpactProcessed(Impact: CUnavailImpact): Boolean;
+Begin
+	If IsNull(Impact) Then
+		Return False;
+	End If;
+	Return Impact.Decision <> DECISION_NONE;
+End Function ImpactProcessed;
+
+Function ImpactSkipped(Impact: CUnavailImpact): Boolean;
+Begin
+	If IsNull(Impact) Then
+		Return False;
+	End If;
+	Return Impact.Decision = DECISION_SKIP;
+End Function ImpactSkipped;
+
+// Переключить отметки строки плана: Processed — «обрабатывать», Skip — «не запускать».
+// Processed = False → задача вне плана (Decision = NONE); Skip = True → DECISION_SKIP;
+// иначе DECISION_RESCHEDULE. Для «не запускать» дата нового запуска не нужна (пустая ячейка).
+Function SetImpactFlags(Impact: CUnavailImpact; Processed, Skip: Boolean): Boolean;
+Begin
+	If IsNull(Impact) Then
+		Return False;
+	End If;
+	If Not Processed Then
+		Impact.Decision := DECISION_NONE;
+		Return True;
+	End If;
+	If Skip Then
+		Impact.Decision := DECISION_SKIP;
+		Return True;
+	End If;
+	Impact.Decision := DECISION_RESCHEDULE;
+	Return True;
+End Function SetImpactFlags;
+
+// --- Слой раскладки: сколько секунд работы в нём уже занято ---
+// Отдельный объект (а не число в ArrayList) — чтобы менять загрузку слоя присваиванием поля.
+Class CPlanLayer: Object
+	Public Load: Double;            // занятое время слоя, секунды
+End Class CPlanLayer;
+
+// Эффективная длительность задачи для раскладки: истории нет — берём минимальную «разумную»
+Function PlanEffectiveSeconds(Impact: CUnavailImpact): Double;
+Begin
+	If IsNull(Impact) Then
+		Return 0;
+	End If;
+	If Impact.AvgSeconds < MIN_ASSUMED_SECONDS Then
+		Return MIN_ASSUMED_SECONDS;
+	End If;
+	Return Impact.AvgSeconds;
+End Function PlanEffectiveSeconds;
+
+// --- Число «слоёв» для желаемого окончания плана ---
+// N = ⌈суммарная средняя длительность задач «перепланировать» / (окончание − начало)⌉,
+// не меньше 1 и не больше UNAVAIL_MAX_LAYERS.
+Function PlanLayersForFinish(Impacts: ArrayList; PlanStart: DateTime; Finish: DateTime): Integer;
+Var
+	Impact: CUnavailImpact;
+	TotalSeconds, WindowSeconds: Double;
+	N, I: Integer;
+Begin
+	TotalSeconds := 0;
+	If Not IsNull(Impacts) Then
+		For I := 0 To Impacts.Count - 1 Do
+			Impact := Impacts.Item(I) As CUnavailImpact;
+			If Impact.Decision = DECISION_RESCHEDULE Then
+				TotalSeconds := TotalSeconds + PlanEffectiveSeconds(Impact);
+			End If;
+		End For;
+	End If;
+	WindowSeconds := DateTime.Difference(PlanStart, Finish).TotalSeconds;
+	If (TotalSeconds <= 0) Or (WindowSeconds <= 0) Then
+		Return 1;
+	End If;
+	N := Double.RoundInt(TotalSeconds / WindowSeconds);
+	If (N As Double) * WindowSeconds < TotalSeconds Then
+		N := N + 1;                              // вверх (ceil)
+	End If;
+	If N < 1 Then
+		N := 1;
+	End If;
+	If N > UNAVAIL_MAX_LAYERS Then
+		N := UNAVAIL_MAX_LAYERS;
+	End If;
+	Return N;
+End Function PlanLayersForFinish;
+
+// --- Раскладка по «слоям» (теория расписаний) ---
+// Слоёв — N (сколько задач выполняется ОДНОВРЕМЕННО); внутри слоя задачи идут ВПЛОТНУЮ
+// (старт следующей = финиш предыдущей в этом же слое), а каждая задача (LPT: длинные — первыми)
+// кладётся в НАИМЕНЕЕ загруженный слой, поэтому слои выравниваются, а финиш плана ≈ сумма / N.
+// Возвращает упорядоченное по времени расписание (как DistributeSchedule).
+Function DistributeScheduleLayers(Impacts: ArrayList; PlanStart: DateTime; Layers: Integer): ArrayList;
+Var
+	Schedule: ArrayList;
+	ByPlan: SortedList;
+	Loads: ArrayList;
+	Layer: CPlanLayer;
+	Impact, Other: CUnavailImpact;
+	Best: Double;
+	Rank, I, J, N, BestIdx, GapSeconds: Integer;
+	IsLonger, IsTie: Boolean;
+Begin
+	Schedule := New ArrayList.Create;
+	If IsNull(Impacts) Then
+		Return Schedule;
+	End If;
+	N := Layers;
+	If N < 1 Then
+		N := 1;
+	End If;
+	If N > UNAVAIL_MAX_LAYERS Then
+		N := UNAVAIL_MAX_LAYERS;
+	End If;
+	Loads := New ArrayList.Create;
+	For I := 0 To N - 1 Do
+		Layer := New CPlanLayer.Create;
+		Layer.Load := 0;
+		Loads.Add(Layer);
+	End For;
+	// порядок LPT (длинные — вперёд): ключ SortedList = ранг (как в TaskPlanner.BuildPlan)
+	ByPlan := New SortedList.Create;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		If Impact.Decision = DECISION_RESCHEDULE Then
+			Rank := 0;
+			For J := 0 To Impacts.Count - 1 Do
+				Other := Impacts.Item(J) As CUnavailImpact;
+				If (J <> I) And (Other.Decision = DECISION_RESCHEDULE) Then
+					IsLonger := PlanEffectiveSeconds(Other) > PlanEffectiveSeconds(Impact);
+					IsTie := (PlanEffectiveSeconds(Other) = PlanEffectiveSeconds(Impact)) And (J < I);
+					If IsLonger Or IsTie Then
+						Rank := Rank + 1;
+					End If;
+				End If;
+			End For;
+			ByPlan.Add(Rank, Impact);
+		End If;
+	End For;
+	If ByPlan.Count = 0 Then
+		Return Schedule;
+	End If;
+	// раскладка: задача — в наименее загруженный слой; старт = сколько слой уже набрал
+	For I := 0 To ByPlan.Count - 1 Do
+		Impact := ByPlan.GetByIndex(I) As CUnavailImpact;
+		BestIdx := 0;
+		Best := (Loads.Item(0) As CPlanLayer).Load;
+		For J := 1 To N - 1 Do
+			If (Loads.Item(J) As CPlanLayer).Load < Best Then
+				Best := (Loads.Item(J) As CPlanLayer).Load;
+				BestIdx := J;
+			End If;
+		End For;
+		Impact.NewStart := DateTime.AddSeconds(PlanStart, Double.RoundInt(Best));
+		Layer := Loads.Item(BestIdx) As CPlanLayer;
+		Layer.Load := Best + PlanEffectiveSeconds(Impact);
+	End For;
+	// Дедупликация: если до штатного запуска задачи осталось не больше DEDUP_GAP_MINUTES минут,
+	// разовый запуск не нужен — задача и так отработает по расписанию (иначе двойной прогон).
+	For I := 0 To ByPlan.Count - 1 Do
+		Impact := ByPlan.GetByIndex(I) As CUnavailImpact;
+		If Impact.HasNextRegularRun Then
+			GapSeconds := Double.RoundInt(DateTime.Difference(Impact.NewStart, Impact.NextRegularRun).TotalSeconds);
+			If GapSeconds <= (DEDUP_GAP_MINUTES * 60) Then
+				Impact.Decision := DECISION_SKIP;
+				Impact.DedupSkipped := True;
+				Impact.Note := "подавлен: штатный запуск " + Impact.NextRegularRun.ToString;
+			End If;
+		End If;
+	End For;
+	Schedule := GetRescheduleSchedule(Impacts);
+	Return Schedule;
+End Function DistributeScheduleLayers;
+
+// Значение ячейки таблицы плана: строка Impact, столбец Column
+Function UnavailPlanCell(Impact: CUnavailImpact; Column: Integer): String;
+Begin
+	If IsNull(Impact) Then
+		Return "";
+	End If;
+	If Column = UNAVAIL_COL_TASK_ID Then
+		Return Impact.Id;
+	End If;
+	If Column = UNAVAIL_COL_TASK_NAME Then
+		Return Impact.Name;
+	End If;
+	If Column = UNAVAIL_COL_BA_NAME Then
+		Return Impact.BusinessApp;
+	End If;
+	If Column = UNAVAIL_COL_RESPONSIBLE Then
+		Return Impact.ResponsibleUser;
+	End If;
+	If Column = UNAVAIL_COL_START_TIME Then
+		Return Impact.RunStart.ToString;
+	End If;
+	If Column = UNAVAIL_COL_END_TIME Then
+		Return Impact.RunFinish.ToString;
+	End If;
+	If Column = UNAVAIL_COL_TIME_SPAN Then
+		Return UnavailDurationText(Double.RoundInt(Impact.AvgSeconds));
+	End If;
+	If Column = UNAVAIL_COL_PROCESS Then
+		// «обрабатывать» = задача участвует в плане (перепланировать или не запускать)
+		If Impact.Decision = DECISION_NONE Then
+			Return UNAVAIL_MARK_OFF;
+		End If;
+		Return UNAVAIL_MARK_ON;
+	End If;
+	If Column = UNAVAIL_COL_SKIP Then
+		If Impact.Decision = DECISION_SKIP Then
+			Return UNAVAIL_MARK_ON;
+		End If;
+		Return UNAVAIL_MARK_OFF;
+	End If;
+	If Column = UNAVAIL_COL_START_TIME_NEW Then
+		// пусто = задача не перепланируется (решение «не запускать»)
+		If Impact.Decision = DECISION_RESCHEDULE Then
+			Return Impact.NewStart.ToString;
+		End If;
+		Return "";
+	End If;
+	Return "";
+End Function UnavailPlanCell;
+
+// Короткая сводка для Memo над таблицей плана
+Function UnavailPlanHeaderText(Impacts: ArrayList; Window: CUnavailWindow): String;
+Var
+	Impact: CUnavailImpact;
+	I, Cnt, ReschedCount, SkipCount: Integer;
+	S: String;
+Begin
+	Cnt := 0;
+	ReschedCount := 0;
+	SkipCount := 0;
+	If Not IsNull(Impacts) Then
+		Cnt := Impacts.Count;
+		For I := 0 To Cnt - 1 Do
+			Impact := Impacts.Item(I) As CUnavailImpact;
+			If Impact.Decision = DECISION_RESCHEDULE Then
+				ReschedCount := ReschedCount + 1;
+			Else
+				SkipCount := SkipCount + 1;
+			End If;
+		End For;
+	End If;
+	S := "";
+	If Not IsNull(Window) Then
+		S := "Период недоступности: " + Window.Start.ToString + " — " + Window.Stop.ToString + UNAVAIL_CRLF;
+		S := S + "Хвостовое окно раскладки, ч: " + Window.TailHours.ToString + UNAVAIL_CRLF;
+	End If;
+	S := S + "Затронуто задач: " + Cnt.ToString + " (перепланировать: " + ReschedCount.ToString
+		+ ", не запускать: " + SkipCount.ToString + ")" + UNAVAIL_CRLF;
+	S := S + "Подробности — в таблице плана (её время можно править, план — сохранять/загружать).";
+	Return S;
+End Function UnavailPlanHeaderText;
+
+// --- Найти запись по Id задачи (для выбора строки в форме) ---
+Function FindImpactById(Impacts: ArrayList; Id: String): CUnavailImpact;
+Var
+	I: Integer;
+Begin
+	If IsNull(Impacts) Then
+		Return Null;
+	End If;
+	For I := 0 To Impacts.Count - 1 Do
+		If (Impacts.Item(I) As CUnavailImpact).Id = Id Then
+			Return Impacts.Item(I) As CUnavailImpact;
+		End If;
+	End For;
+	Return Null;
+End Function FindImpactById;
+
+// --- Правки плана (пользовательские) ---
+Function SetImpactDecision(Impacts: ArrayList; Index: Integer; Decision: String): Boolean;
+Begin
+	If (Index < 0) Or (Index >= Impacts.Count) Then
+		Return False;
+	End If;
+	(Impacts.Item(Index) As CUnavailImpact).Decision := Decision;
+	Return True;
+End Function SetImpactDecision;
+
+Function SetImpactNewStart(Impacts: ArrayList; Index: Integer; NewStart: DateTime): Boolean;
+Begin
+	If (Index < 0) Or (Index >= Impacts.Count) Then
+		Return False;
+	End If;
+	(Impacts.Item(Index) As CUnavailImpact).NewStart := NewStart;
+	Return True;
+End Function SetImpactNewStart;
+
+// --- Собрать план целиком: затронутые задачи + равномерная раскладка доп. запусков ---
+// Containers — СПИСОК выбранных контейнеров задач (задачи всех, дубли по Id — один раз).
+Function PrepareUnavailabilityPlan(Containers: ArrayList; WindowStart: DateTime; WindowEnd: DateTime; TailHours: Integer): ArrayList;
+Var
+	Impacts: ArrayList;
+Begin
+	Impacts := CollectAffectedTasks(Containers, WindowStart, WindowEnd);
+	DistributeSchedule(Impacts, WindowEnd, TailHours);
+	Return Impacts;
+End Function PrepareUnavailabilityPlan;

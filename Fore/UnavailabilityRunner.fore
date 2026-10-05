@@ -1,0 +1,358 @@
+// ID: UNAVAILABILITYRUNNER  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: МАТЕРИАЛИЗАЦИЯ плана недоступности — как реально запускать
+// перепланированные разовые запуски.
+//
+// Способ — «диспетчер»: служебная задача класса «Выполнение модуля» с периодом Timely
+// (каждые N минут) вызывает Sub RunDuePlannedRunsMain. Диспетчер мгновенно выполняет задачи,
+// чьё «новое время» наступило, отмечает результат в таблице плана (UNAVAILABILITY_PLAN) и
+// пишет историю попытки в журнал (UNAVAILABILITY_RUN_LOG).
+// Источник плана — ТОЛЬКО таблица БД (UnavailabilityStore.fore): записи недоступности, период
+// которых уже начался и ещё не истёк (EndDt + RUN_PLAN_TAIL_HOURS). Файловых режимов нет (1.86).
+// Ключ: IScheduledTask.ExecuteImmediate(SaveResult) — выполняет задачу в текущем процессе
+// и репозитории, запущенный планировщик НЕ требуется; класс задачи знать не нужно, поэтому
+// способ универсален для любых задач контейнера.
+//
+// ВАЖНО: это ЕДИНСТВЕННЫЙ модуль проекта, который МЕНЯЕТ состояние системы (выполняет задачи).
+// UnavailabilityPlanner по-прежнему только считает план.
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	RUN_CRLF = #13 + #10;
+	RUN_POLL_MINUTES = 5;                               // рекомендуемый интервал опроса диспетчера
+	// ---- идентификаторы: ПРОПИШИТЕ СВОИ ----
+	RUN_CONTAINER_ID = "TASK_CONTAINTER";                  // Id контейнера запланированных задач
+	RUN_DISPATCHER_ID = "UNAVAIL_DISPATCHER";              // Id служебной задачи-диспетчера
+	// Хвостовое окно (часов) после окончания недоступности, в котором план ещё актуален
+	RUN_PLAN_TAIL_HOURS = 6;
+	// Состояния записи ЖУРНАЛА ЗАПУСКОВ (значения = константы UnavailabilityStore: RUN_STATE_*).
+	// Модуль автономен — значения продублированы, как RUN_DECISION_RESCHEDULE выше.
+	RUN_LOG_DONE = "DONE";
+	RUN_LOG_FAILED = "FAILED";
+	RUN_LOG_SKIPPED = "SKIPPED";
+	RUN_LOG_DRY_RUN = "DRY_RUN";
+	// Сухой прогон: True — ничего не запускать, только записать в Debug, что было бы запущено
+	RUN_DRY_RUN = False;
+	// Сколько запусков максимум обрабатывать за один тик (защита от «зависшего» диспетчера)
+	RUN_MAX_TICK_RUNS = 50;
+	// Через сколько минут «зависший» RUNNING (процесс упал) вернуть в очередь — как UNV_STUCK_MINUTES
+	RUN_STUCK_MINUTES = 30;
+
+// --- Итог одной попытки выполнения задачи ---
+Class CRunOutcome: Object
+	Public Ok: Boolean;             // задача выполнена успешно
+	Public ErrorText: String;       // текст ошибки/причины пропуска
+	Public SkippedBusy: Boolean;    // пропущено, потому что задача уже выполняется
+End Class CRunOutcome;
+
+// --- Длительность попытки в секундах (по часам процесса диспетчера) ---
+Function RunSeconds(StartedAt: DateTime; FinishedAt: DateTime): Integer;
+Begin
+	Return Double.RoundInt(DateTime.Difference(StartedAt, FinishedAt).TotalSeconds);
+End Function RunSeconds;
+
+// --- Найти задачу по идентификатору: сначала объект РЕПОЗИТОРИЯ, затем переданный контейнер ---
+// ⚠ План переноса может быть построен по НЕСКОЛЬКИМ контейнерам задач, а диспетчеру известен
+// только один (параметр RUN_CONTAINER_ID). Поэтому задача ищется по Id в репозитории (ItemById):
+// так находятся задачи ВСЕХ контейнеров, а переданный контейнер остаётся резервом (как было раньше).
+Function FindTaskById(Container: IMetabaseObjectDescriptor; Id: String): IMetabaseObjectDescriptor;
+Var
+	Tasks: IMetabaseObjectDescriptors;
+	Desc: IMetabaseObjectDescriptor;
+	I: Integer;
+Begin
+	If String.Trim(Id) = "" Then
+		Return Null;
+	End If;
+	Desc := Null;
+	Try
+		Desc := MetabaseClass.Active.ItemById(Id);
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: задача «" + Id + "» не открылась в репозитории — " + e.Message);
+		Desc := Null;
+	End Try;
+	If Not IsNull(Desc) Then
+		Return Desc;
+	End If;
+	If IsNull(Container) Then
+		Return Null;
+	End If;
+	Tasks := (Container.Bind As IScheduledTasksContainer).Tasks;
+	For I := 0 To Tasks.Count - 1 Do
+		If (Tasks.Item(I) As IMetabaseObjectDescriptor).Id = Id Then
+			Return Tasks.Item(I);
+		End If;
+	End For;
+	Return Null;
+End Function FindTaskById;
+
+// --- Немедленно выполнить задачу и получить итог попытки (универсально для любого класса задачи) ---
+// ExecuteImmediate выполняет задачу в текущем процессе/репозитории; планировщик не нужен,
+// настройки почты и выгрузки на FTP игнорируются. Пример справки берёт задачу в режиме Edit.
+// Проверяем ScheduledTaskState.Executing (без «магических» чисел) и IScheduledTaskResult.Succeeded,
+// чтобы отличить «запустили» от «выполнено успешно» и записать текст ошибки в план.
+Function RunTaskNowEx(TaskDesc: IMetabaseObjectDescriptor): CRunOutcome;
+Var
+	Task: IScheduledTask;
+	Result: IScheduledTaskResult;
+	Out: CRunOutcome;
+Begin
+	Out := New CRunOutcome.Create;
+	Out.Ok := False;
+	Out.ErrorText := "";
+	Out.SkippedBusy := False;
+	If IsNull(TaskDesc) Then
+		Out.ErrorText := "задача не найдена в контейнере";
+	Else
+		Try
+			Task := TaskDesc.Edit As IScheduledTask;
+			If IsNull(Task) Then
+				Out.ErrorText := "не удалось открыть задачу";
+			Else
+				If Task.State = ScheduledTaskState.Executing Then
+					Out.SkippedBusy := True;
+					Out.ErrorText := "задача уже выполняется — попытка пропущена";
+				Else
+					Result := Task.ExecuteImmediate(True);   // True — сохранить результат в базу
+					If IsNull(Result) Then
+						Out.ErrorText := "ExecuteImmediate вернул Null";
+					Else
+						Out.Ok := Result.Succeeded;
+						If Not Out.Ok Then
+							Out.ErrorText := "задача завершилась с ошибкой (Succeeded = False)";
+						End If;
+					End If;
+				End If;
+			End If;
+		Except On e: Exception Do
+			Out.Ok := False;
+			Out.ErrorText := e.Message;
+			Debug.WriteLine("Недоступность: сбой запуска задачи — " + e.Message);
+		End Try;
+	End If;
+	Return Out;
+End Function RunTaskNowEx;
+
+// --- Немедленно выполнить задачу (упрощённая обёртка для совместимости) ---
+Function RunTaskNow(TaskDesc: IMetabaseObjectDescriptor): Boolean;
+Var
+	Out: CRunOutcome;
+Begin
+	Out := RunTaskNowEx(TaskDesc);
+	Return Out.Ok;
+End Function RunTaskNow;
+
+// === План берётся из ТАБЛИЦЫ: строки плана тех записей недоступности, период которых наступил ===
+// Активной считается запись, у которой Now >= StartDt и Now <= EndDt + TailHours.
+// Выполняются строки с заполненным START_TIME_NEW, чьё время уже наступило.
+// Отметка «выполнено» — колонки таблицы плана (DONE_AT, RUN_STATE), история попыток — в журнале
+// UNAVAILABILITY_RUN_LOG (WriteRunLog).
+Function RunDuePlannedRunsFromTable(Container: IMetabaseObjectDescriptor; TailHours: Integer): Integer;
+Var
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Outcome: CRunOutcome;
+	TaskDesc: IMetabaseObjectDescriptor;
+	State: String;
+	Started, Finished: DateTime;
+	I, Cnt, Stuck: Integer;
+Begin
+	Cnt := 0;
+	// ⚠ Контейнер здесь — только РЕЗЕРВ для поиска задач (основной путь — ItemById в репозитории):
+	// план может быть построен по НЕСКОЛЬКИМ контейнерам, а контейнер-параметр может быть не задан.
+	If IsNull(Container) Then
+		Debug.WriteLine("Недоступность: контейнер-параметр не задан — задачи ищем по Id в репозитории");
+	End If;
+	If Not RUN_DRY_RUN Then
+		// подобрать «брошенные» строки: процесс диспетчера падал, оставив RUNNING
+		Stuck := ResetStuckPlanRuns(RUN_STUCK_MINUTES);
+		If Stuck > 0 Then
+			Debug.WriteLine("Недоступность: возвращено в очередь «зависших» запусков: " + Stuck.ToString);
+		End If;
+	End If;
+	// строки, чьё время уже наступило: время сравнивает СУБД (current_timestamp),
+	// окно недоступности и лимит попыток учитываются в самом запросе
+	Runs := LoadDueRunRows(TailHours, RUN_MAX_TICK_RUNS);
+	For I := 0 To Runs.Count - 1 Do
+		Run := Runs.Item(I) As CUnavailStoredRun;
+		If RUN_DRY_RUN Then
+			Debug.WriteLine("Недоступность (сухой прогон): было бы запущено — " + Run.TaskId
+				+ " на " + Run.NewStart.ToString + " (запись " + Run.Key.ToString
+				+ ", попыток " + Run.Attempts.ToString + ")");
+			// журнал выполненных запусков (UNAVAILABILITY_RUN_LOG): сухой прогон тоже фиксируем
+			WriteRunLog(Run.Key, Run.TaskId, Run.TaskName, Run.NewStart, DateTime.Now, DateTime.Now,
+				RUN_LOG_DRY_RUN, Run.Attempts, 0,
+				"сухой прогон: задача не запускалась", True);
+			Cnt := Cnt + 1;
+		Else
+			// атомарный захват строки: если её забрал другой диспетчер — пропускаем
+			If ClaimPlanRun(Run.Key, Run.TaskId, Run.NewStart) Then
+				Started := DateTime.Now;
+				TaskDesc := FindTaskById(Container, Run.TaskId);
+				Outcome := RunTaskNowEx(TaskDesc);
+				Finished := DateTime.Now;
+				State := RUN_LOG_FAILED;
+				If Outcome.Ok Then
+					State := RUN_LOG_DONE;
+				End If;
+				If Outcome.SkippedBusy Then
+					// задача ещё выполняется: возвращаем строку в очередь (попытка не состоялась)
+					FinishPlanRun(Run.Key, Run.TaskId, Run.NewStart, False, Outcome.ErrorText);
+					State := RUN_LOG_SKIPPED;
+				Else
+					FinishPlanRun(Run.Key, Run.TaskId, Run.NewStart, Outcome.Ok, Outcome.ErrorText);
+					If Outcome.Ok Then
+						Cnt := Cnt + 1;
+					End If;
+				End If;
+				// журнал выполненных запусков: одна строка на попытку (номер = ATTEMPTS плана)
+				WriteRunLog(Run.Key, Run.TaskId, Run.TaskName, Run.NewStart, Started, Finished,
+					State, Run.Attempts + 1, RunSeconds(Started, Finished), Outcome.ErrorText, False);
+			End If;
+		End If;
+	End For;
+	Return Cnt;
+End Function RunDuePlannedRunsFromTable;
+
+// === Точка входа для задачи-диспетчера (Sub без параметров) ===
+// Контейнер и хвостовое окно берутся из констант RUN_* — при необходимости замените их либо
+// вызывайте RunDuePlannedRunsFromTable с явными аргументами из своего кода.
+Sub RunDuePlannedRunsMain;
+Var
+	MB: IMetabase;
+	Container: IMetabaseObjectDescriptor;
+	Done: Integer;
+Begin
+	MB := MetabaseClass.Active;
+	// Контейнер-параметр — РЕЗЕРВ для поиска задач: если его нет, работаем по Id в репозитории
+	Container := Null;
+	Try
+		Container := MB.ItemById(RUN_CONTAINER_ID);
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: контейнер «" + RUN_CONTAINER_ID + "» не открылся — " + e.Message
+			+ "; строки плана обрабатываются, задачи ищутся по Id в репозитории");
+		Container := Null;
+	End Try;
+	Done := RunDuePlannedRunsFromTable(Container, RUN_PLAN_TAIL_HOURS);
+	If Done > 0 Then
+		Debug.WriteLine("Недоступность: в этом тике выполнено запусков: " + Done.ToString);
+	End If;
+End Sub RunDuePlannedRunsMain;
+
+// === Отчёт «что будет запущено при следующем тике» (без запуска) ===
+// Используется кнопкой «Что будет запущено» на форме: то же самое, что делает сухой прогон,
+// но результат отдаётся текстом. Возвращает построчный отчёт по строкам, которым уже пора.
+Function UnavailRunTickReport(Container: IMetabaseObjectDescriptor; TailHours: Integer): String;
+Var
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	S: String;
+	I: Integer;
+Begin
+	// Контейнер не обязателен: отчёт строится по строкам плана (см. LoadDueRunRows)
+	If IsNull(Container) Then
+		Debug.WriteLine("Недоступность: отчёт «что будет запущено» — контейнер-параметр не задан");
+	End If;
+	Runs := LoadDueRunRows(TailHours, RUN_MAX_TICK_RUNS);
+	S := "К запуску сейчас: " + Runs.Count.ToString + " строк (лимит тика " + RUN_MAX_TICK_RUNS.ToString + ").";
+	For I := 0 To Runs.Count - 1 Do
+		Run := Runs.Item(I) As CUnavailStoredRun;
+		S := S + RUN_CRLF + Run.NewStart.ToString + " — " + Run.TaskId
+			+ " (запись " + Run.Key.ToString + ", состояние " + UnavailRunStateText(Run.RunState)
+			+ ", попыток " + Run.Attempts.ToString + ")";
+	End For;
+	If Runs.Count = 0 Then
+		S := S + RUN_CRLF + "Нет строк, которым пора запускаться: либо план не сохранён,"
+			+ " либо время ещё не наступило, либо простой не активен (или его окно истекло).";
+	End If;
+	Return S;
+End Function UnavailRunTickReport;
+
+// === Точка входа для задачи-диспетчера в режиме «сухой прогон» (без запусков) ===
+// Удобно для приёмки: поставьте эту процедуру в задачу-диспетчер и посмотрите Debug/журнал.
+Sub RunDuePlannedRunsDryRunMain;
+Var
+	MB: IMetabase;
+	Container: IMetabaseObjectDescriptor;
+	Report: String;
+Begin
+	MB := MetabaseClass.Active;
+	Container := Null;
+	Try
+		Container := MB.ItemById(RUN_CONTAINER_ID);
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность (сухой прогон): контейнер «" + RUN_CONTAINER_ID
+			+ "» не открылся — " + e.Message + "; отчёт строится по строкам плана");
+		Container := Null;
+	End Try;
+	Report := UnavailRunTickReport(Container, RUN_PLAN_TAIL_HOURS);
+	Debug.WriteLine("Недоступность (сухой прогон):" + RUN_CRLF + Report);
+End Sub RunDuePlannedRunsDryRunMain;
+
+// === Одноразовая настройка: создать служебную задачу-диспетчер ===
+// Класс — «Выполнение модуля», период — Timely (каждые PollMinutes минут), процедура — SubName.
+Function CreateUnavailabilityDispatcher(ContainerId: String; ModuleId: String; SubName: String; PollMinutes: Integer): Boolean;
+Var
+	MB: IMetabase;
+	CrInfo: IMetabaseObjectCreateInfo;
+	MObj: IMetabaseObject;
+	Exe: IExecuteSubScheduledTask;
+	Per: IScheduledTaskPeriodTimely;
+	Prop: IScheduledTaskProperties;
+Begin
+	MB := MetabaseClass.Active;
+	CrInfo := MB.CreateCreateInfo;
+	CrInfo.ClassID := MetabaseObjectClass.KE_CLASS_TASK_EXECUTESUB;
+	CrInfo.Id := RUN_DISPATCHER_ID;
+	CrInfo.Name := "Диспетчер недоступности системы";
+	CrInfo.Parent := MB.ItemById(ContainerId);
+	MObj := MB.CreateObject(CrInfo).Edit;
+	Exe := MObj As IExecuteSubScheduledTask;
+	Exe.Assembly := (MB.ItemById(ModuleId).Bind As IModule).Assembly;
+	Exe.SubName := SubName;
+	Prop := Exe.Properties;
+	Per := Prop.CreatePeriod(ScheduledTaskPeriodType.Timely) As IScheduledTaskPeriodTimely;
+	Per.StartDateTime := DateTime.Now;
+	Per.TimeInterval := DateTime.ComposeTimeOfDay(0, PollMinutes, 0, 0);   // TimeInterval: DateTime
+	Prop.Period := Per;
+	MObj.Save;
+	Return True;
+End Function CreateUnavailabilityDispatcher;
+
+// === Настройка диспетчера «идемпотентно»: создать, если нет; обновить период, если есть ===
+// Удобно при изменении интервала опроса: повторный вызов не падает на «объект уже существует».
+Function EnsureUnavailabilityDispatcher(ContainerId: String; ModuleId: String; SubName: String; PollMinutes: Integer): Boolean;
+Var
+	MB: IMetabase;
+	Desc: IMetabaseObjectDescriptor;
+	MObj: IMetabaseObject;
+	Exe: IExecuteSubScheduledTask;
+	Per: IScheduledTaskPeriodTimely;
+	Prop: IScheduledTaskProperties;
+	Exists: Boolean;
+Begin
+	MB := MetabaseClass.Active;
+	Exists := False;
+	Try
+		Desc := MB.ItemById(RUN_DISPATCHER_ID);     // есть ли уже диспетчер
+		Exists := Not IsNull(Desc);
+	Except On e: Exception Do
+		Exists := False;
+	End Try;
+	If Not Exists Then
+		Return CreateUnavailabilityDispatcher(ContainerId, ModuleId, SubName, PollMinutes);
+	End If;
+	Try
+		MObj := Desc.Edit;
+		Exe := MObj As IExecuteSubScheduledTask;
+		Prop := Exe.Properties;
+		Per := Prop.CreatePeriod(ScheduledTaskPeriodType.Timely) As IScheduledTaskPeriodTimely;
+		Per.StartDateTime := DateTime.Now;
+		Per.TimeInterval := DateTime.ComposeTimeOfDay(0, PollMinutes, 0, 0);
+		Prop.Period := Per;
+		MObj.Save;
+		Return True;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: не удалось обновить диспетчер — " + e.Message);
+		Return False;
+	End Try;
+End Function EnsureUnavailabilityDispatcher;

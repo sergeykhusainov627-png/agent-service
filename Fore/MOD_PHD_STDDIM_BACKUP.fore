@@ -1,0 +1,681 @@
+// ===========================================================================================
+// STDDIM_BACKUP — бэкап табличных справочников (KE_CLASS_STDDIM).
+//
+// Что делает:
+//   • находит в папке бэкапа табличные справочники;
+//   • основу справочника ищет среди ЗАВИСИМОСТЕЙ объекта (dependencies(True)): KE_CLASS_TABLE —
+//     обычная таблица, KE_CLASS_QUERY — таблица-запрос;
+//   • в папке FLDR_PHD_TECH_STDDIM_BACKUP создаёт объекты-копии:
+//       <X>_BACKUP      — таблица со структурой <X>: переносим только поля, определяющие
+//                         хранение (Name, DataType, Size, Precision). Ограничения, индексы,
+//                         identity, значения по умолчанию и вычисляемые поля НЕ переносим —
+//                         копия должна просто уметь хранить те же данные;
+//       <Запрос>_BACKUP — копия объекта-запроса, в тексте которого имена таблиц заменены
+//                         на <X>_BACKUP (замена по идентификаторам, не по подстрокам);
+//   • там же создаёт команды СУБД «DELETE + INSERT SELECT *» для наполнения копий
+//     и складывает их в задачу ETL_STDDIM_COMMANDS_BACKUP (тоже в этой папке);
+//   • оригиналы не изменяются: правится только текст КОПИИ запроса.
+//
+// Отдельный шаг (этап 2) — StdDimSwitchToBackup: переключение справочников-бэкапа с оригинальных
+// таблиц/запросов на наши забакапленные копии. У табличного справочника основа при копировании
+// НЕ дублируется, поэтому копия справочника читает данные оригинала. Основа хранится у БЛОКА:
+// IStandardDimension.Blocks → IStandardDimBlock.Dataset (тип IDatasetModel) плюс формулы
+// Binding(<атрибут>).AsString вида «<источник>.<поле>». Шаг подставляет блокам копию источника
+// и переносит формулы привязок на её имя; правится только КОПИЯ справочника.
+// Id копии = Id оригинала + BACKUP_SUFFIX, поэтому оригинал ищется в пространстве имён BA_KEY по
+// Id без этого хвоста (OrigIdOf + MB.ItemByIdNamespace) — он нужен для запасного пути через
+// IMetabaseObjectCopyInfo.Assign.
+// Шаг запускается отдельно (в main закомментирован) — как и остальные «запускные» процедуры.
+// ===========================================================================================
+
+
+Sub StdDimBackup;
+Var
+	MB: IMetabase;
+	TechFolder, BackupFolder, Desc, BasisDesc, Child: IMetabaseObjectDescriptor;
+	NewDesc, CmdDesc, TaskDesc, TmplDesc: IMetabaseObjectDescriptor;
+	SrcTab, NewTab, ChildTab: ITable;
+	TmplCmd: ISqlCommand;
+	SqlCons: IDtSqlCommandConsumer;
+	etlTask: iEtlTask;
+	MObj, CmdObj2: IMetabaseObject;
+	CmdObj: ietlplaindataconsumer;
+	List, Seen, Names: ArrayList;
+	Field_, NewField: ITableField;
+	SrcDesc2: IMetabaseObjectDescriptor;
+	CC: IMetabaseObjectCopyInfo;
+	Q2: IQuery;
+	Db: IDatabase;
+	DbKey, BasisKind, SrcNative, DstNative, CmdId, CmdName, CmdText, SqlText_: String;
+	Ix, N, K, Made, Skip_, Err_: Integer;
+	Found: Boolean;
+Begin
+	MB := MetabaseClass.Active;
+	Made := 0;  Skip_ := 0;  Err_ := 0;
+	Journal("=== STDDIM_BACKUP: бэкап табличных справочников ===");
+	BackupFolder := MB.ItemByIdNamespace(FOLDER_BACKUP_ID, BA_KEY);
+	// всё складываем в одну папку — так удобнее проверять
+	TechFolder := FindObjById(FLDR_PHD_TECH_STDDIM_BACKUP);
+	If IsNull(TechFolder) Then
+		TechFolder := BackupFolder;
+		Journal("⚠ папка «" + FLDR_PHD_TECH_STDDIM_BACKUP + "» не найдена — работаем в «"
+			+ BackupFolder.Id + "»");
+	Else
+		Journal("Папка результата: «" + TechFolder.Id + "»");
+	End If;
+	// база и ключ драйвера — из шаблона «Команды СУБД» в папке бэкапа
+	Db := Null;
+	DbKey := "";
+	TmplDesc := FindObjById(SQLCMD_TEMPLATE_ID);
+	If Not IsNull(TmplDesc) Then
+		Try
+			TmplCmd := TmplDesc.Bind As ISqlCommand;
+			If Not IsNull(TmplCmd) Then
+				Db := TmplCmd.Database;
+				If Not IsNull(Db) Then
+					DbKey := TmplCmd.Database.DriverId;
+				End If;
+			End If;
+		Except On E: Exception Do
+			Db := Null;
+		End Try;
+	End If;
+	If SQLCMD_DRIVER_KEY <> "" Then
+		DbKey := SQLCMD_DRIVER_KEY;
+	End If;
+	Journal("Шаблон «" + SQLCMD_TEMPLATE_ID + "»: ключ драйвера «" + DbKey + "»");
+	// задача ETL для команд — в той же папке
+	TaskDesc := FindObjById(STDDIM_TASK_ID);
+	If Not IsNull(TaskDesc) Then
+		MB.DeleteObject(TaskDesc.Key);
+		Journal("Прежняя задача «" + STDDIM_TASK_ID + "» удалена");
+	End If;
+	MObj := CreateRepoObject(MetabaseObjectClass.KE_CLASS_ETLTASK, TechFolder,
+		STDDIM_TASK_ID, STDDIM_TASK_ID);
+	etlTask := MObj As iEtlTask;
+	// обход папки бэкапа
+	List := New ArrayList.Create;
+	Seen := New ArrayList.Create;
+	CollectDescendants(BackupFolder, List, Seen);
+	Ix := 0;
+	While Ix <= List.Count - 1 Do
+		Desc := List.Item(Ix) As IMetabaseObjectDescriptor;
+		If Desc.ClassId = MetabaseObjectClass.KE_CLASS_STDDIM Then
+			// основа справочника — среди его зависимостей: Dependencies(FromSource: True)
+			// (параметр актуален для ярлыков: True — зависимости того, на что ярлык ссылается)
+			BasisDesc := Null;
+			BasisKind := "";
+			For Each Child In Desc.dependencies(True) Do
+				If Child.ClassId = MetabaseObjectClass.KE_CLASS_TABLE Then
+					BasisDesc := Child;
+					BasisKind := "таблица";
+				Elseif Child.ClassId = MetabaseObjectClass.KE_CLASS_QUERY Then
+					BasisDesc := Child;
+					BasisKind := "запрос";
+				End If;
+			End For;
+			Journal("Справочник «" + Desc.Id + "»: основа — " + BasisKind);
+			If IsNull(BasisDesc) Then
+				Skip_ := Skip_ + 1;
+				Journal("   ПРОПУСК: среди зависимостей нет ни таблицы, ни запроса");
+			Else
+				Try
+					// Собираем команды наполнения: для каждой исходной таблицы — создать копию (если её
+					// нет), очистить и залить. Копии-объекты и команды кладём в одну папку.
+					CmdText := "";
+					CmdId := "CMD_" + Desc.Id + "_TABLES";
+					CmdName := CmdId + " (" + Desc.Id + ")";
+					If BasisKind = "таблица" Then
+						// одна таблица-основа
+						SrcTab := BasisDesc.Bind As ITable;
+						SrcNative := PlainName(String.Trim(SrcTab.NativeName));
+						DstNative := SrcNative + BACKUP_SUFFIX;
+						NewDesc := FindChildById(TechFolder, DstNative);
+						If IsNull(NewDesc) Then
+							NewDesc := CreateRepoObject(MetabaseObjectClass.KE_CLASS_TABLE,
+								TechFolder, DstNative, DstNative);
+							NewTab := NewDesc.Edit As ITable;
+							NewTab.Database := SrcTab.Database;
+							NewTab.NativeName := DstNative;
+							K := 0;
+							While K <= SrcTab.Fields.Count - 1 Do
+								Field_ := SrcTab.Fields.Item(K) As ITableField;
+								NewField := NewTab.Fields.Add;
+								NewField.Name := Field_.Name;
+								NewField.DataType := Field_.DataType;
+								NewField.Size := Field_.Size;
+								NewField.Precision := Field_.Precision;
+								K := K + 1;
+							End While;
+							(NewTab As IMetabaseObject).Save;
+							Journal("   создана таблица-копия «" + DstNative + "» (поля перенесены)");
+						Else
+							Journal("   таблица-копия «" + DstNative + "» уже есть — не трогаем");
+						End If;
+						CmdText := SqlCreateLikeByNames(DstNative, SrcNative) + CRLF_
+							+ SqlClearByName(DstNative) + CRLF_
+							+ SqlInsertByName(DstNative, SrcNative) + CRLF_;
+					Else
+						// основа — запрос: берём таблицы из его текста и подменяем имена
+						SqlText_ := "";
+						Try
+							SqlText_ := (BasisDesc.Bind As IQuery).Sql;
+						Except On E: Exception Do
+							SqlText_ := "";
+						End Try;
+						Names := TableNamesFromSql(SqlText_);
+						Journal("   таблиц в запросе: " + Names.Count.ToString);
+						N := 0;
+						While N <= Names.Count - 1 Do
+							SrcNative := PlainName(String.Trim(Names.Item(N) As String));
+							N := N + 1;
+							DstNative := SrcNative + BACKUP_SUFFIX;
+							SrcDesc2 := FindTableByName(SrcNative, Db);
+							If IsNull(SrcDesc2) Then
+								Journal("   ⚠ таблица «" + SrcNative + "» не найдена — пропуск");
+							Else
+								SrcTab := SrcDesc2.Bind As ITable;
+								NewDesc := FindChildById(TechFolder, DstNative);
+								If Not IsNull(NewDesc) Then
+									MetabaseClass.Active.DeleteObject(NewDesc.Key);
+									Journal("   прежняя таблица-копия «" + DstNative + "» удалена (пересоздаём)");
+								End If;
+								
+								NewDesc := CreateRepoObject(MetabaseObjectClass.KE_CLASS_TABLE,
+									TechFolder, DstNative, DstNative);
+								NewTab := NewDesc.Edit As ITable;
+								NewTab.Database := SrcTab.Database;
+								NewTab.NativeName := DstNative;
+								K := 0;
+								While K <= SrcTab.Fields.Count - 1 Do
+									Field_ := SrcTab.Fields.Item(K) As ITableField;
+									NewField := NewTab.Fields.Add;
+									NewField.Id := Field_.Id;
+									NewField.CaseSensitiveId := Field_.CaseSensitiveId;
+									NewField.Name := Field_.Name;
+									NewField.DataType := Field_.DataType;
+									NewField.Size := Field_.Size;
+									NewField.Precision := Field_.Precision;
+									K := K + 1;
+								End While;
+								(NewTab As IMetabaseObject).Save;
+								Journal("   создана таблица-копия «" + DstNative + "»");
+								
+								CmdText := CmdText + SqlCreateLikeByNames(DstNative, SrcNative) + CRLF_
+									+ SqlClearByName(DstNative) + CRLF_
+									+ SqlInsertByName(DstNative, SrcNative) + CRLF_;
+								SqlText_ := ReplaceIdent(SqlText_, SrcNative, DstNative);
+							End If;
+						End While;
+						// копия запроса — со подменёнными именами таблиц
+						NewDesc := FindChildById(TechFolder, PlainName(BasisDesc.Id) + BACKUP_SUFFIX);
+						If IsNull(NewDesc) Then
+							CC := MetabaseClass.Active.CreateCopyInfo;
+							CC.Source := BasisDesc;
+							CC.Destination := TechFolder;
+							CC.Id := PlainName(BasisDesc.Id) + BACKUP_SUFFIX;
+							CC.Name := PlainName(BasisDesc.Id) + BACKUP_SUFFIX;
+							CC.WithData := False;
+							MetabaseClass.Active.CopyObject(CC);
+							NewDesc := FindChildById(TechFolder, PlainName(BasisDesc.Id) + BACKUP_SUFFIX);
+						End If;
+						If Not IsNull(NewDesc) Then
+							Q2 := NewDesc.Edit As IQuery;
+							Q2.Database := (BasisDesc.Bind As IQuery).Database;
+							Q2.Sql := SqlText_;
+							Q2.RefreshFields((
+								((BasisDesc.bind As itable).Database
+									As imetabaseobjectdescriptor).Open(Null) As idatabaseinstance).Connection);
+							(Q2 As IMetabaseObject).Save;
+							Journal("   копия запроса «" + NewDesc.Id + "» сохранена с новыми именами таблиц");
+						End If;
+					End If;
+					// команда наполнения — объектом «Команда СУБД» в задаче
+					If CmdText <> "" Then
+						CmdDesc := FindObjById(CmdId);
+						If Not IsNull(CmdDesc) Then
+							Try
+								MetabaseClass.Active.DeleteObject(CmdDesc.Key);
+								Journal("   прежняя команда «" + CmdId + "» удалена (пересоздаём)");
+							Except On E: Exception Do
+								Journal("   ⚠ прежнюю команду «" + CmdId + "» удалить не удалось: " + E.Message);
+							End Try;
+						End If;
+						Try
+							MakeSqlCommand(TechFolder, CmdId, CmdName, CmdText, Db, DbKey);
+							CmdDesc := FindObjById(CmdId);
+							If Not IsNull(CmdDesc) Then
+								CmdObj := etlTask.Create(EtlObjectType.PlainDataSqlCommandConsumer)
+									As ietlplaindataconsumer;
+								CmdObj := CmdObj.Edit;
+								CmdObj.Id := "SQL_" + CmdId;
+								CmdObj.Name := CmdName;
+								SqlCons := CmdObj.Consumer As IDtSqlCommandConsumer;
+								SqlCons.Command := CmdDesc.bind As isqlcommand;
+								CmdObj.FillDefault;
+								CmdObj.Save;
+								createWX(etlTask, CmdObj, 40, 40 + Made * 80);
+							End If;
+							Made := Made + 1;
+							Journal("   команда «" + CmdId + "»: " + CmdText);
+						Except On E: Exception Do
+							Err_ := Err_ + 1;
+							Journal("   ОШИБКА команды «" + CmdId + "»: " + E.Message);
+						End Try;
+					End If;
+				Except On E: Exception Do
+					Err_ := Err_ + 1;
+					Journal("   ОШИБКА обработки «" + Desc.Id + "»: " + E.Message);
+				End Try;
+			End If;
+		End If;
+		Ix := Ix + 1;
+	End While;
+	MObj.Save;
+	Journal("ИТОГО: справочников обработано " + Made.ToString + ", пропущено " + Skip_.ToString
+		+ ", ошибок " + Err_.ToString);
+End Sub StdDimBackup;
+
+// -------------------------------------------------------------------------------------------
+// StdDimSwitchToBackup — переключение справочников-бэкапа с оригиналов на копии основы.
+//
+// Идея: основа табличного справочника задаётся у БЛОКА — IStandardDimBlock.Dataset
+// («определяет объект, содержащий структуру источника данных блока справочника»,
+// тип IDatasetModel), а соответствие атрибутов и полей живёт в формулах
+// IStandardDimBlock.Binding(<атрибут>).AsString вида "<источник>.<поле>". Поэтому
+// переключение делаем напрямую: у КОПИИ справочника (Desc.Edit As IStandardDimension)
+// каждому блоку подставляем копию источника и переносим формулы привязок на её имя
+// (замена по границам идентификатора — ReplaceIdent), затем Save.
+// Запасной вариант, если Dataset почему-то не присваивается: IMetabaseObjectCopyInfo.Assign —
+// пересоздание копии справочника «вместе с источником данных» (Source = сам копируемый объект).
+//
+// Оригинал справочника ищем по тому же Id вне области бэкапа. Оригиналы не меняются: трогаем только
+// копию справочника внутри папки бэкапа (её удаляем и создаём заново — тем же Id, тем же именем).
+// -------------------------------------------------------------------------------------------
+Sub StdDimSwitchToBackup;
+Var
+	MB: IMetabase;
+	List, Seen: ArrayList;
+	Desc, BasisDesc, Child, NewDesc, OrigDict, TechFolder: IMetabaseObjectDescriptor;
+	CC: IMetabaseObjectCopyInfo;
+	MObj: IMetabaseObject;
+	DM: IStandardDimension;
+	Blocks: IStandardDimBlocks;
+	Blk: IStandardDimBlock;
+	Attrs: IStandardDimAttributes;
+	NewDs: IDatasetModel;
+	Ix, K, J, Made, Skip_, Switched: Integer;
+	Kind_, OldName_, NewName_, OldNm_, OldNat_, Expr_, OrigId_: String;
+	Already_: Integer;
+Begin
+	MB := MetabaseClass.Active;
+	Made := 0; Skip_ := 0;  Already_ := 0;
+	Journal("=== STDDIM: переключение справочников-бэкапа на копии основы ===");
+	// папка с копиями основы: MB.Item принимает КЛЮЧ, поэтому папку ищем по Id через FindObjById
+	TechFolder := FindObjById(FLDR_PHD_TECH_STDDIM_BACKUP);
+	If IsNull(TechFolder) Then
+		TechFolder := MB.ItemByIdNamespace(FOLDER_BACKUP_ID, BA_KEY);
+		Journal("⚠ папка «" + FLDR_PHD_TECH_STDDIM_BACKUP + "» не найдена — ищем копии в «"
+			+ TechFolder.Id + "»");
+	Else
+		Journal("Копии основы ищем в папке «" + TechFolder.Id + "»");
+	End If;
+	List := New ArrayList.Create;
+	Seen := New ArrayList.Create;
+	CollectDescendants(MB.ItemByIdNamespace(FOLDER_BACKUP_ID, BA_KEY), List, Seen);
+	Ix := 0;
+	While Ix <= List.Count - 1 Do
+		Desc := List.Item(Ix) As IMetabaseObjectDescriptor;
+		Ix := Ix + 1;
+		If Desc.ClassId = MetabaseObjectClass.KE_CLASS_STDDIM Then
+			// оригинал справочника: у копии Id оканчивается на BACKUP_SUFFIX — хвост снимаем
+			OrigId_ := PlainName(Desc.Id);
+			OrigDict := Null;
+			If OrigId_ <> Desc.Id Then
+				// оригиналы всегда лежат в пространстве имён BA_KEY
+				Try
+					OrigDict := MB.ItemByIdNamespace(OrigId_, BA_KEY);
+				Except On E2: Exception Do
+					OrigDict := Null;
+				End Try;
+			End If;
+			If OrigId_ = Desc.Id Then
+				Journal("«" + Desc.Id + "»: Id без хвоста " + BACKUP_SUFFIX
+					+ " — вероятно, это не копия, ищем только по зависимостям");
+			Elseif IsNull(OrigDict) Then
+				Journal("«" + Desc.Id + "»: в BA_KEY нет объекта «" + OrigId_ + "» — работаем по зависимостям");
+			Elseif IsInBackupArea(OrigDict) Then
+				Journal("«" + Desc.Id + "»: «" + OrigId_ + "» тоже в области бэкапа — за оригинал не считаем");
+				OrigDict := Null;
+			Else
+				Journal("«" + Desc.Id + "»: оригинал «" + OrigId_ + "»");
+			End If;
+			// на что сейчас смотрит основа этой копии справочника
+			BasisDesc := Null;
+			Kind_ := "";
+			For Each Child In Desc.Dependencies(True) Do
+				If Child.ClassId = MetabaseObjectClass.KE_CLASS_TABLE Then
+					BasisDesc := Child;
+					Kind_ := "таблица";
+				Elseif Child.ClassId = MetabaseObjectClass.KE_CLASS_QUERY Then
+					BasisDesc := Child;
+					Kind_ := "запрос";
+				End If;
+			End For;
+			If IsNull(BasisDesc) Then
+				Skip_ := Skip_ + 1;
+				Journal("«" + Desc.Id + "»: основа (таблица/запрос) не найдена — пропуск");
+			Else
+				// ТЕКУЩЕЕ имя основы — именно его заменяем в формулах
+				OldName_ := String.Trim(BasisDesc.Id);
+				OldNm_ := String.Trim(BasisDesc.Name);
+				OldNat_ := "";
+				If Kind_ = "таблица" Then
+					OldNat_ := String.Trim((BasisDesc.Bind As ITable).NativeName);
+				End If;
+				// ИМЯ КОПИИ: у текущей основы сначала снимаем возможный хвост BACKUP_SUFFIX,
+				// иначе повторный запуск дал бы копию копии с хвостом _BACKUP_BACKUP
+				NewDesc := Null;
+				NewName_ := "";
+				If Kind_ = "таблица" Then
+					NewName_ := PlainName(OldNat_) + BACKUP_SUFFIX;
+					NewDesc := FindChildById(TechFolder, NewName_);
+				End If;
+				If IsNull(NewDesc) Then
+					NewName_ := PlainName(OldName_) + BACKUP_SUFFIX;
+					NewDesc := FindChildById(TechFolder, NewName_);
+				End If;
+				If IsNull(NewDesc) Then
+					Skip_ := Skip_ + 1;
+					Journal("«" + Desc.Id + "»: копия основы «" + PlainName(OldName_) + BACKUP_SUFFIX
+						+ "» в папке бэкапа не найдена — пропуск");
+				Elseif String.Trim(NewDesc.Id) = OldName_ Then
+					Already_ := Already_ + 1;
+					Journal("«" + Desc.Id + "»: уже смотрит на копию «" + OldName_ + "» — пропуск");
+				Else
+					Journal("«" + Desc.Id + "»: " + Kind_ + " «" + OldName_ + "» → копия «" + NewDesc.Id + "»");
+					Try
+						// правим КОПИЮ справочника: у каждого блока переключаем источник данных
+						// (IStandardDimBlock.Dataset) и переносим на копию формулы привязок,
+						// в которых записано имя источника
+						MObj := Desc.Edit;
+						DM := MObj As IStandardDimension;
+						Blocks := DM.Blocks;
+						Attrs := DM.Attributes;
+						Switched := 0;
+						K := 0;
+						While K <= Blocks.Count - 1 Do
+							Blk := Blocks.Item(K) As IStandardDimBlock;
+							NewDs := NewDesc.Bind As IDatasetModel;
+							Blk.Dataset := NewDs;
+							Switched := Switched + 1;
+							// формулы привязки: Binding(<атрибут>).AsString = "<источник>.<поле>"
+							J := 0;
+							While J <= Attrs.Count - 1 Do
+								Try
+									Expr_ := Blk.Binding(Attrs.Item(J)).AsString;
+									If Expr_ <> "" Then
+										// в формуле может стоять Id, Name или физ. имя источника
+										Expr_ := ReplaceIdent(Expr_, OldName_, NewName_);
+										If OldNm_ <> "" Then
+											Expr_ := ReplaceIdent(Expr_, OldNm_, NewName_);
+										End If;
+										If OldNat_ <> "" Then
+											Expr_ := ReplaceIdent(Expr_, OldNat_, NewName_);
+										End If;
+										Blk.Binding(Attrs.Item(J)).AsString := Expr_;
+									End If;
+								Except On E2: Exception Do
+									Journal("      привязка атрибута №" + J.ToString + " не переписана");
+								End Try;
+								J := J + 1;
+							End While;
+							// условие фильтрации блока тоже может ссылаться на источник
+							Try
+								Expr_ := Blk.Where.AsString;
+								If Expr_ <> "" Then
+									Expr_ := ReplaceIdent(Expr_, OldName_, NewName_);
+									If OldNm_ <> "" Then
+										Expr_ := ReplaceIdent(Expr_, OldNm_, NewName_);
+									End If;
+									If OldNat_ <> "" Then
+										Expr_ := ReplaceIdent(Expr_, OldNat_, NewName_);
+									End If;
+									Blk.Where.AsString := Expr_;
+								End If;
+							Except On E2: Exception Do
+								Journal("      условие Where не переписано");
+							End Try;
+							If Blk.BlockType = DimBlockType.Recursive Then
+								Journal("      блок №" + K.ToString
+									+ " рекурсивный — проверьте StartWith/ConnectBy вручную");
+							End If;
+							K := K + 1;
+						End While;
+						MObj.Save;
+						Made := Made + 1;
+						Journal("   блоков переключено: " + Switched.ToString + ", сохранено");
+					Except On E: Exception Do
+						Journal("   прямое переключение не прошло: " + E.Message);
+						// запасной путь: пересоздать копию справочника «вместе с источником данных»
+						// (Assign) от найденного оригинала — Id оригинала = Id копии без BACKUP_SUFFIX
+						If IsNull(OrigDict) Then
+							Skip_ := Skip_ + 1;
+							Journal("   запасной путь недоступен: оригинал справочника не найден");
+						Else
+							Try
+								If IsInBackupArea(Desc) Then
+									MB.DeleteObject(Desc.Key);
+									Journal("   прежняя копия справочника удалена (пересоздаём)");
+								End If;
+								CC := MB.CreateCopyInfo;
+								CC.Source := OrigDict;
+								CC.Destination := Desc.Parent;
+								CC.Id := Desc.Id;
+								CC.Name := Desc.Name;
+								CC.WithData := False;
+								CC.Assign := True;
+								MB.CopyObject(CC);
+								Made := Made + 1;
+								Journal("   копия пересоздана вместе с источником данных (Assign = True)");
+							Except On E2: Exception Do
+								Skip_ := Skip_ + 1;
+								Journal("   ОШИБКА: " + E2.Message);
+							End Try;
+						End If;
+					End Try;
+				End If;
+			End If;
+		End If;
+	End While;
+	Journal("--- переключено: " + Made.ToString + ", уже было переключено: " + Already_.ToString
+		+ ", пропущено: " + Skip_.ToString + " ---");
+End Sub StdDimSwitchToBackup;
+
+// Снимает хвост BACKUP_SUFFIX с идентификатора копии: «OBJ_TBL_DICT_BACKUP» → «OBJ_TBL_DICT».
+// Нужно для поиска ОРИГИНАЛА справочника по Id его копии: постфикс снимаем только целиком и только
+// в конце, поэтому объект с именем вида «..._BACKUPX» не трогаем.
+Function OrigIdOf(Id_: String): String;
+Var
+	P, SuffLen: Integer;
+Begin
+	SuffLen := BACKUP_SUFFIX.Length;
+	If Id_.Length > SuffLen Then
+		P := Id_.LastIndexOf(BACKUP_SUFFIX);
+		If P >= 0 Then
+			If P + SuffLen = Id_.Length Then
+				Return Id_.SubString(0, P);
+			End If;
+		End If;
+	End If;
+	Return Id_;
+End Function OrigIdOf;
+
+// Поиск объекта-таблицы по её физическому имени.
+// Путь 1 (быстрый, для t-таблиц НСИ): имя вида «t<ключ>…» → берём объект по ключу (Item(ключ)) и
+//   ищем среди его детей таблицу с таким nativeName.
+// Путь 2 (общий): поиск по репозиторию объектов класса KE_CLASS_TABLE (IMetabaseObjectFindInfo)
+//   и перебор найденных с проверкой nativeName и той же базы.
+Function FindTableByName(TabName: String; Db_: IDatabase): IMetabaseObjectDescriptor;
+Var
+	MB: IMetabase;
+	FI: IMetabaseObjectFindInfo;
+	Res: IMetabaseObjectDescriptors;
+	D, C, RootDesc: IMetabaseObjectDescriptor;
+	T: ITable;
+	Key_, I, Dig: Integer;
+	Ch, Nm: String;
+	Ok_: Boolean;
+Begin
+	MB := MetabaseClass.Active;
+	TabName := String.Trim(TabName);
+	If TabName = "" Then
+		Return Null;
+	End If;
+	// путь 1: имя «t<ключ>…» — ищем словарь по ключу и таблицу среди его детей
+	If (TabName.Length > 1) And (String.ToUpper(String.Left(TabName, 1)) = String.ToUpper(T_PREFIX)) Then
+		Key_ := 0;
+		Ok_ := True;
+		I := 1;
+		While (I <= TabName.Length - 1) And Ok_ Do
+			Ch := TabName.SubString(I, 1);
+			Dig := SQL_DIGITS.IndexOf(Ch);
+			If Dig < 0 Then
+				Ok_ := False;
+			Else
+				Key_ := Key_ * 10 + Dig;
+				I := I + 1;
+			End If;
+		End While;
+		If Ok_ And (Key_ > 0) Then
+			RootDesc := Null;
+			Try
+				RootDesc := MB.Item(Key_);
+			Except On E: Exception Do
+				RootDesc := Null;
+			End Try;
+			If Not IsNull(RootDesc) Then
+				For Each C In RootDesc.Children Do
+					If C.ClassId = MetabaseObjectClass.KE_CLASS_TABLE Then
+						Nm := "";
+						Try
+							Nm := String.Trim((C.Bind As ITable).NativeName);
+						Except On E: Exception Do
+							Nm := "";
+						End Try;
+						If String.ToUpper(Nm) = String.ToUpper(TabName) Then
+							Return C;
+						End If;
+					End If;
+				End For;
+			End If;
+		End If;
+	End If;
+	// путь 2: поиск по всему репозиторию
+	FI := MB.CreateFindInfo;
+	FI.ClassId := MetabaseObjectClass.KE_CLASS_TABLE;
+	//FI.Text := TabName;
+	//FI.Attribute := FindAttribute.NameOrIdent;
+	//FI.CaseSensitive := False;
+	FI.WholeWordsOnly := False;
+	FI.ScanNestedNamespaces := True;
+	FI.ScanHiddenFolders := True;
+	//FI.ContainersContent := True;
+	//FI.InternalObjects := True;
+	FI.Scope := mb.Item(BA_KEY);
+	Res := MB.Find(FI);
+	I := 0;
+	While I <= Res.Count - 1 Do
+		D := Res.Item(I) As IMetabaseObjectDescriptor;
+		I := I + 1;
+		Nm := "";
+		Try
+			T := D.Bind As ITable;
+			If Not IsNull(T) Then
+				Nm := String.Trim(T.NativeName);
+			End If;
+		Except On E: Exception Do
+			Nm := "";
+		End Try;
+		If String.ToUpper(Nm) = String.ToUpper(TabName) Then
+			If IsNull(Db_) Then
+				Return D;
+			End If;
+			Try
+				If ((D.Bind As ITable).Database as imetabaseobjectdescriptor).Name =
+					(Db_ As imetabaseobjectdescriptor).name Then
+					Return D;
+				End If;
+			Except On E: Exception Do
+				Nm := "";
+			End Try;
+		End If;
+	End While;
+	Return Null;
+End Function FindTableByName;
+
+// Замена имени таблицы в тексте SQL по границам идентификатора: «t1» не затронет «t10».
+// Содержимое строковых литералов ('…') не меняем.
+Function ReplaceIdent(Sql, OldName, NewName: String): String;
+Var
+	R, Ch: String;
+	I: Integer;
+	InStr: Boolean;
+Begin
+	R := "";
+	I := 0;
+	InStr := False;
+	If (String.Trim(Sql) = "") Or (String.Trim(OldName) = "") Then
+		Return Sql;
+	End If;
+	While I <= Sql.Length - 1 Do
+		Ch := Sql.SubString(I, 1);
+		If Ch = "'" Then
+			InStr := Not InStr;
+			R := R + Ch;
+			I := I + 1;
+		Elseif (Not InStr)
+			And (String.ToUpper(Sql.SubString(I, OldName.Length)) = String.ToUpper(OldName))
+			And EdgeLeft(Sql, I - 1)
+			And EdgeRight(Sql, I + OldName.Length) Then
+			R := R + NewName;
+			I := I + OldName.Length;
+		Else
+			R := R + Ch;
+			I := I + 1;
+		End If;
+	End While;
+	Return R;
+End Function ReplaceIdent;
+
+// Слева от имени не должно быть буквы, цифры, подчёркивания или точки
+Function EdgeLeft(S: String; Pos: Integer): Boolean;
+Var
+	Ch: String;
+Begin
+	If Pos < 0 Then
+		Return True;
+	End If;
+	Ch := S.SubString(Pos, 1);
+	If (SQL_LETTERS.IndexOf(Ch) >= 0) Or (SQL_DIGITS.IndexOf(Ch) >= 0)
+		Or (Ch = "_") Or (Ch = ".") Then
+		Return False;
+	End If;
+	Return True;
+End Function EdgeLeft;
+
+// Справа от имени не должно быть буквы, цифры или подчёркивания
+Function EdgeRight(S: String; Pos: Integer): Boolean;
+Var
+	Ch: String;
+Begin
+	If Pos > S.Length - 1 Then
+		Return True;
+	End If;
+	Ch := S.SubString(Pos, 1);
+	If (SQL_LETTERS.IndexOf(Ch) >= 0) Or (SQL_DIGITS.IndexOf(Ch) >= 0) Or (Ch = "_") Then
+		Return False;
+	End If;
+	Return True;
+End Function EdgeRight;
+

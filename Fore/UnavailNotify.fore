@@ -1,0 +1,442 @@
+// ID: UNAVAILNOTIFY  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: УВЕДОМЛЕНИЯ ответственным о переносе запусков после простоя.
+// Формирует письма (по одному на ответственного) и умеет:
+//   1) отдать тексты в форму/Memo                     — UnavailNoticesText;
+//   2) сохранить письма в папку (html/eml-подобно)    — SaveNoticesToFolder;
+//   3) отправить письма функцией ЗАКАЗЧИКА            — SendNoticesUserMailer →
+//      SendMailMessage(To_; From_; Subject; Body: String) (технический пользователь уже настроен,
+//      функция подключается в сборку отдельно). ⚠ Прежняя SMTP-функция (Net/INetSmtpClient) удалена.
+// ВАЖНО: модуль ПИШЕТ наружу (файлы/почту) только по явному вызову — сам ничего не отправляет.
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	NOTIFY_CRLF = #13 + #10;
+	// Заголовок письма (тема)
+	NOTIFY_SUBJECT = "Планировщик: перенос запусков после недоступности системы";
+	NOTIFY_SUBJECT_UNAVAIL = "Недоступность системы: сроки, автор и задачи";
+	// Суффикс к «ответственному» для получения адреса (если в таблице хранится логин, а не адрес)
+	NOTIFY_EMAIL_SUFFIX = "";
+	// Сколько задач максимум перечислять в одном письме (остальные — счётчиком)
+	NOTIFY_MAX_TASKS = 50;
+	// Отправка: только функция заказчика SendMailMessage (см. SendNoticesUserMailer) — SMTP-настройки не нужны
+	NOTIFY_FROM = "planner@company.local";                   // адрес отправителя
+	NOTIFY_FOLDER = "C:\\Temp\\unavail_notices";             // папка для файлов писем (приёмка/архив)
+
+// --- Письмо одному ответственному ---
+Class CUnavailNotice: Object
+	Public To_: String;             // адрес/логин получателя (из таблицы ответственных)
+	Public Responsible: String;     // имя ответственного (для сводки; адрес берётся из MAIL)
+	Public Subject: String;         // тема
+	Public Body: String;            // тело (HTML)
+	Public Tasks: Integer;          // сколько задач в письме
+End Class CUnavailNotice;
+
+// --- Ответственный без имени/логина (подставляем в письмо как есть) ---
+Function NoticeAddressee(Responsible: String): String;
+Var
+	S: String;
+Begin
+	S := Responsible;
+	If S = "" Then
+		S := "(ответственный не указан)";
+	End If;
+	If NOTIFY_EMAIL_SUFFIX <> "" Then
+		S := S + NOTIFY_EMAIL_SUFFIX;
+	End If;
+	Return S;
+End Function NoticeAddressee;
+
+// --- Экранирование текста для HTML ---
+Function NoticeHtmlEscape(S: String): String;
+Var
+	Res: String;
+Begin
+	Res := S;
+	Res := String.Replace(Res, "&", "&amp;");
+	Res := String.Replace(Res, "<", "&lt;");
+	Res := String.Replace(Res, ">", "&gt;");
+	Return Res;
+End Function NoticeHtmlEscape;
+
+// --- Тело письма (HTML-таблица) по задачам одного ответственного ---
+Function NoticeBody(Impacts: ArrayList; Window: CUnavailWindow; Responsible: String): String;
+Var
+	Impact: CUnavailImpact;
+	S: String;
+	Cnt, I: Integer;
+Begin
+	S := "<html><head><meta charset='utf-8'></head><body><p>Недоступность системы: <b>" + NoticeHtmlEscape(Window.Start.ToString)
+		+ " — " + NoticeHtmlEscape(Window.Stop.ToString) + "</b></p>"
+		+ "<p>Запланирован перенос разовых запусков задач, за которые вы отвечаете:</p>"
+		+ "<table border='1' cellspacing='0' cellpadding='4'>"
+		+ "<tr><th>Задача</th><th>Прогноз запуска</th><th>Прогноз окончания</th>"
+		+ "<th>Решение</th><th>Новый запуск</th></tr>";
+	Cnt := 0;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		If Impact.ResponsibleUser = Responsible Then
+			If Cnt < NOTIFY_MAX_TASKS Then
+				S := S + "<tr><td>" + NoticeHtmlEscape(Impact.Id) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.RunStart.ToString) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.RunFinish.ToString) + "</td><td>"
+					+ NoticeHtmlEscape(UnavailDecisionText(Impact.Decision)) + "</td><td>";
+				If Impact.Decision = DECISION_RESCHEDULE Then
+					S := S + NoticeHtmlEscape(Impact.NewStart.ToString);
+				End If;
+				S := S + "</td></tr>";
+			End If;
+			Cnt := Cnt + 1;
+		End If;
+	End For;
+	S := S + "</table>";
+	If Cnt > NOTIFY_MAX_TASKS Then
+		S := S + "<p>… всего задач: " + Cnt.ToString + ", в письме показаны первые "
+			+ NOTIFY_MAX_TASKS.ToString + ".</p>";
+	End If;
+	S := S + "<p>Письмо сформировано автоматически (планировщик задач).</p></body></html>";
+	Return S;
+End Function NoticeBody;
+
+// --- Собрать письма по ответственным из плана недоступности ---
+// Возвращает ArrayList из CUnavailNotice (по одному на ответственного, у кого есть задачи).
+Function NoticesFromImpacts(Impacts: ArrayList; Window: CUnavailWindow): ArrayList;
+Var
+	Notices: ArrayList;
+	Notice: CUnavailNotice;
+	Impact: CUnavailImpact;
+	Resp: String;
+	I, J: Integer;
+	Found: Boolean;
+Begin
+	Notices := New ArrayList.Create;
+	If IsNull(Impacts) Then
+		Return Notices;
+	End If;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		Resp := Impact.ResponsibleUser;
+		Found := False;
+		For J := 0 To Notices.Count - 1 Do
+			If (Notices.Item(J) As CUnavailNotice).To_ = NoticeAddressee(Resp) Then
+				Found := True;
+			End If;
+		End For;
+		If Not Found Then
+			Notice := New CUnavailNotice.Create;
+			Notice.To_ := NoticeAddressee(Resp);
+			Notice.Subject := NOTIFY_SUBJECT;
+			Notice.Tasks := 0;
+			Notices.Add(Notice);
+		End If;
+	End For;
+	// заполняем тела писем (группировка уже построена)
+	For I := 0 To Notices.Count - 1 Do
+		Notice := Notices.Item(I) As CUnavailNotice;
+		Notice.Body := NoticeBody(Impacts, Window, String.Replace(Notice.To_, NOTIFY_EMAIL_SUFFIX, ""));
+		For J := 0 To Impacts.Count - 1 Do
+			If (Impacts.Item(J) As CUnavailImpact).ResponsibleUser
+				= String.Replace(Notice.To_, NOTIFY_EMAIL_SUFFIX, "") Then
+				Notice.Tasks := Notice.Tasks + 1;
+			End If;
+		End For;
+	End For;
+	Return Notices;
+End Function NoticesFromImpacts;
+
+// --- Тексты писем для формы (Memo): кому и сколько задач ---
+Function UnavailNoticesText(Notices: ArrayList): String;
+Var
+	Notice: CUnavailNotice;
+	S: String;
+	I: Integer;
+Begin
+	If IsNull(Notices) Then
+		Return "Писем нет.";
+	End If;
+	If Notices.Count = 0 Then
+		Return "Писем нет: в плане не указаны ответственные (проверьте таблицу RESPONSIBLE_FOR_TASK).";
+	End If;
+	S := "Писем к отправке: " + Notices.Count.ToString + NOTIFY_CRLF;
+	For I := 0 To Notices.Count - 1 Do
+		Notice := Notices.Item(I) As CUnavailNotice;
+		S := S + NOTIFY_CRLF + "Кому: " + Notice.To_ + " | задач: " + Notice.Tasks.ToString
+			+ " | тема: " + Notice.Subject;
+	End For;
+	Return S;
+End Function UnavailNoticesText;
+
+// --- Имя файла письма: адрес без недопустимых в имени файла символов ---
+Function NoticeFileName(Index: Integer; To_: String): String;
+Var
+	S: String;
+Begin
+	S := String.Replace(To_, "@", "_at_");
+	S := String.Replace(S, "/", "_");
+	S := String.Replace(S, "\\", "_");
+	S := String.Replace(S, ":", "_");
+	S := String.Replace(S, "*", "_");
+	S := String.Replace(S, "?", "_");
+	S := String.Replace(S, "<", "_");
+	S := String.Replace(S, ">", "_");
+	S := String.Replace(S, "|", "_");
+	S := String.Replace(S, " ", "_");
+	Return "notice_" + (Index + 1).ToString + "_" + S + ".htm";
+End Function NoticeFileName;
+
+// --- Сохранить письма в папку (по файлу на ответственного). Возврат: сколько файлов записали ---
+// Работает всегда (файлы/почта — только по явному вызову), удобно для приёмки: письма можно открыть в браузере.
+Function SaveNoticesToFolder(Notices: ArrayList; Folder: String): Integer;
+Var
+	Notice: CUnavailNotice;
+	Writer: ITextWriter;
+	FullPath: String;
+	I, Cnt: Integer;
+Begin
+	Cnt := 0;
+	If IsNull(Notices) Then
+		Return 0;
+	End If;
+	For I := 0 To Notices.Count - 1 Do
+		Notice := Notices.Item(I) As CUnavailNotice;
+		FullPath := Path.Combine(Folder, NoticeFileName(I, Notice.To_));
+		Try
+			Writer := File.OpenTextWriter(FullPath, False);
+			// ⚠ Кодировку задаём ДО первой записи, иначе кириллица в письме уйдёт в системную ANSI
+			// и в браузере/почте будет «кракозябрами» (см. также <meta charset> в теле письма).
+			Try
+				Writer.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Недоступность: кодировку UTF-8 для письма задать не удалось — " + e.Message);
+			End Try;
+			Writer.WriteLnString(Notice.Body);
+			Writer.Flush;
+			Cnt := Cnt + 1;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: письмо не сохранено (" + FullPath + ") — " + e.Message);
+		End Try;
+	End For;
+	Return Cnt;
+End Function SaveNoticesToFolder;
+
+// --- Отправка писем. ⚠ SMTP-функция удалена по требованию стенда: везде используется функция
+// заказчика SendMailMessage(To_; From_; Subject; Body: String) — в ней уже настроен технический
+// пользователь, и она подключается в сборку отдельно. См. SendNoticesUserMailer ниже.
+
+// --- Краткая сводка для диалога формы ---
+Function NoticesSummaryText(Notices: ArrayList): String;
+Begin
+	If IsNull(Notices) Then
+		Return "Писем нет.";
+	End If;
+	Return "Писем: " + Notices.Count.ToString + " (по ответственным).";
+End Function NoticesSummaryText;
+// ===========================================================================
+// УВЕДОМЛЕНИЯ О НЕДОСТУПНОСТИ (кнопка «Разослать уведомление ответственным»)
+// Отличие от писем выше (NoticesFromImpacts, SMTP): письмо формируется по ВЫБРАННОЙ записи
+// о недоступности (сроки + автор) и содержит список задач ответственного; адрес берётся из
+// колонки MAIL таблицы ответственных, а отправка выполняется ВНЕШНЕЙ функцией проекта
+// SendMailMessage(To; From; Subject; Body) — она должна быть подключена в сборке (см. DEPLOY).
+// ===========================================================================
+
+// --- Тело письма-уведомления: сроки недоступности, автор записи, задачи ответственного ---
+Function NoticeBodyNotice(Impacts: ArrayList; StartDt: DateTime; EndDt: DateTime; Author: String;
+	Responsible: String): String;
+Var
+	Impact: CUnavailImpact;
+	S, AuthorText: String;
+	Cnt, I: Integer;
+Begin
+	AuthorText := String.Trim(Author);
+	If AuthorText = "" Then
+		AuthorText := "(не указан)";
+	End If;
+	S := "<html><head><meta charset='utf-8'></head><body><p><b>Недоступность системы: " + NoticeHtmlEscape(StartDt.ToString)
+		+ " — " + NoticeHtmlEscape(EndDt.ToString) + "</b></p>"
+		+ "<p>Автор записи о недоступности: <b>" + NoticeHtmlEscape(AuthorText) + "</b></p>"
+		+ "<p>Задачи, за которые вы отвечаете и чьи запуски попадают в период недоступности:</p>"
+		+ "<table border='1' cellspacing='0' cellpadding='4'>"
+		+ "<tr><th>Задача</th><th>Название</th><th>Бизнес-приложение</th>"
+		+ "<th>Прогноз запуска</th><th>Прогноз окончания</th><th>Решение</th><th>Новый запуск</th></tr>";
+	Cnt := 0;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		If Impact.ResponsibleUser = Responsible Then
+			If Cnt < NOTIFY_MAX_TASKS Then
+				S := S + "<tr><td>" + NoticeHtmlEscape(Impact.Id) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.Name) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.BusinessApp) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.RunStart.ToString) + "</td><td>"
+					+ NoticeHtmlEscape(Impact.RunFinish.ToString) + "</td><td>"
+					+ NoticeHtmlEscape(UnavailDecisionText(Impact.Decision)) + "</td><td>";
+				If Impact.Decision = DECISION_RESCHEDULE Then
+					S := S + NoticeHtmlEscape(Impact.NewStart.ToString);
+				End If;
+				S := S + "</td></tr>";
+			End If;
+			Cnt := Cnt + 1;
+		End If;
+	End For;
+	S := S + "</table>";
+	If Cnt > NOTIFY_MAX_TASKS Then
+		S := S + "<p>… всего задач: " + Cnt.ToString + ", в письме показаны первые "
+			+ NOTIFY_MAX_TASKS.ToString + ".</p>";
+	End If;
+	S := S + "<p>Письмо сформировано автоматически (планировщик задач) по записи о недоступности "
+		+ "от " + NoticeHtmlEscape(AuthorText) + ".</p></body></html>";
+	Return S;
+End Function NoticeBodyNotice;
+
+// --- Собрать уведомления по ответственным: адрес — MAIL из таблицы ответственных ---
+// RespIndex — индекс таблицы ответственных (Id задачи → CTaskResponsible, см. LoadResponsibleIndex).
+// Problems — накопительный список замечаний (нет строки в таблице / не заполнен MAIL).
+Function NoticesForResponsibles(Impacts: ArrayList; RespIndex: SortedList; StartDt: DateTime;
+	EndDt: DateTime; Author: String; Problems: ArrayList): ArrayList;
+Var
+	Notices: ArrayList;
+	Notice: CUnavailNotice;
+	Impact: CUnavailImpact;
+	RespRow: CTaskResponsible;
+	Resp, Mail: String;
+	I, J: Integer;
+	Found: Boolean;
+Begin
+	Notices := New ArrayList.Create;
+	If IsNull(Impacts) Then
+		Return Notices;
+	End If;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		Resp := Impact.ResponsibleUser;
+		Mail := "";
+		RespRow := Null;
+		If Not IsNull(RespIndex) Then
+			RespRow := FindTaskResponsibleInIndex(RespIndex, Impact.Id);
+		End If;
+		If IsNull(RespRow) Then
+			If Resp = "" Then
+				AddProblem(Problems, "Задача " + Impact.Id
+					+ ": нет строки в таблице ответственных — уведомление не отправлено");
+			Else
+				AddProblem(Problems, "Задача " + Impact.Id + ": ответственный «" + Resp
+					+ "» известен по плану, но MAIL можно взять только из таблицы ответственных");
+			End If;
+		Else
+			Mail := String.Trim(RespRow.Mail);
+			If Resp = "" Then
+				Resp := String.Trim(RespRow.ResponsibleUser);
+			End If;
+			If Mail = "" Then
+				AddProblem(Problems, "Ответственный «" + Resp + "» (задача " + Impact.Id
+					+ "): не заполнена колонка MAIL — уведомление не отправлено");
+			End If;
+		End If;
+		If Mail <> "" Then
+			Found := False;
+			For J := 0 To Notices.Count - 1 Do
+				If (Notices.Item(J) As CUnavailNotice).To_ = Mail Then
+					Found := True;
+				End If;
+			End For;
+			If Not Found Then
+				Notice := New CUnavailNotice.Create;
+				Notice.To_ := Mail;
+				Notice.Responsible := Resp;
+				Notice.Subject := NOTIFY_SUBJECT_UNAVAIL;
+				Notice.Tasks := 0;
+				Notices.Add(Notice);
+			End If;
+		End If;
+	End For;
+	// тела писем — по каждому адресату (в письме — только его задачи)
+	For I := 0 To Notices.Count - 1 Do
+		Notice := Notices.Item(I) As CUnavailNotice;
+		Notice.Body := NoticeBodyNotice(Impacts, StartDt, EndDt, Author, Notice.Responsible);
+		For J := 0 To Impacts.Count - 1 Do
+			If (Impacts.Item(J) As CUnavailImpact).ResponsibleUser = Notice.Responsible Then
+				Notice.Tasks := Notice.Tasks + 1;
+			End If;
+		End For;
+	End For;
+	Return Notices;
+End Function NoticesForResponsibles;
+
+
+
+// --- Добавить замечание в список (без дублей; Contains не используем — простая проверка) ---
+Sub AddProblem(Problems: ArrayList; Text: String);
+Var
+	S: String;
+	I: Integer;
+	Found: Boolean;
+Begin
+	If IsNull(Problems) Then
+		Return;
+	End If;
+	S := String.Trim(Text);
+	If S = "" Then
+		Return;
+	End If;
+	Found := False;
+	For I := 0 To Problems.Count - 1 Do
+		If (Problems.Item(I) As String) = S Then
+			Found := True;
+		End If;
+	End For;
+	If Not Found Then
+		Problems.Add(S);
+	End If;
+End Sub AddProblem;
+
+// --- Отправка уведомлений ВНЕШНЕЙ функцией проекта ---
+// Вызывается SendMailMessage(To; From; Subject; Body) — функция заказчика; подключается в сборке
+// (модуль проекта + ссылка на сборку в Инспекторе). Ошибка одного письма не прерывает рассылку.
+// Возврат: сколько писем отправлено без ошибок.
+Function SendNoticesUserMailer(Notices: ArrayList; From_: String): Integer;
+Var
+	Notice: CUnavailNotice;
+	Sent, I: Integer;
+Begin
+	Sent := 0;
+	If IsNull(Notices) Then
+		Return Sent;
+	End If;
+	For I := 0 To Notices.Count - 1 Do
+		Notice := Notices.Item(I) As CUnavailNotice;
+		Try
+			SendMailMessage(Notice.To_, From_, Notice.Subject, Notice.Body);
+			Sent := Sent + 1;
+		Except On e: Exception Do
+			Debug.WriteLine("Уведомления: письмо «" + Notice.To_ + "» не отправлено — " + e.Message);
+		End Try;
+	End For;
+	Return Sent;
+End Function SendNoticesUserMailer;
+
+// --- Сводка для Memo/диалога: кому, сколько задач; отдельно — замечания ---
+Function UnavailNoticesForSendText(Notices: ArrayList; Problems: ArrayList): String;
+Var
+	Notice: CUnavailNotice;
+	S: String;
+	I: Integer;
+Begin
+	S := "";
+	If Not IsNull(Notices) Then
+		S := "Уведомлений к отправке: " + Notices.Count.ToString;
+		For I := 0 To Notices.Count - 1 Do
+			Notice := Notices.Item(I) As CUnavailNotice;
+			S := S + NOTIFY_CRLF + "  • " + Notice.To_ + " — «" + Notice.Responsible + "», задач: "
+				+ Notice.Tasks.ToString;
+		End For;
+	End If;
+	If (Not IsNull(Problems)) And (Problems.Count > 0) Then
+		S := S + NOTIFY_CRLF + "Замечания (" + Problems.Count.ToString + "):";
+		For I := 0 To Problems.Count - 1 Do
+			S := S + NOTIFY_CRLF + "  ! " + (Problems.Item(I) As String);
+		End For;
+	End If;
+	If S = "" Then
+		S := "Уведомлять некого: ни у одной затронутой задачи не заполнены ответственный и MAIL.";
+	End If;
+	Return S;
+End Function UnavailNoticesForSendText;
+

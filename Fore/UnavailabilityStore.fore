@@ -1,0 +1,1760 @@
+// ID: UNAVAILABILITYSTORE  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: ХРАНИЛИЩЕ записей о недоступности системы и планов переноса запусков.
+// Данные лежат в таблицах базы данных репозитория; доступ — DAL/SQL (сборки Metabase, Dal, Db):
+//   UNAVAILABILITY      — периоды недоступности + кто и когда завёл/менял запись;
+//   UNAVAILABILITY_PLAN — построенные планы переноса (строка на задачу, срез помечен SAVED_AT);
+//   UNAVAILABILITY_LOG  — журнал действий (кто/когда/что: записи, план, запуски);
+//   UNAVAILABILITY_RUN_LOG — журнал ВЫПОЛНЕННЫХ разовых запусков (история попыток диспетчера).
+// Идентификаторы таблиц/полей задаются константами UNV_*/PLN_* — заполните под свой стенд.
+// ВАЖНО: этот модуль ПИШЕТ в базу (INSERT/UPDATE/DELETE) — в отличие от UnavailabilityPlanner.
+//
+// СОДЕРЖАНИЕ (порядок подпрограмм, чтобы быстрее ориентироваться):
+//   1. Константы (таблицы/поля/состояния/журнал) и классы-строки.
+//   2. Хелперы: литералы SQL, время, пользователь, соединение с базой.
+//   3. Записи о недоступности: чтение/добавление/изменение/удаление (+ журнал).
+//   4. Срезы плана: сохранение одной транзакцией, чтение, удаление, признак «план устарел».
+//   5. Диспетчер: захват строки (ClaimPlanRun), результат (FinishPlanRun), «зависшие»,
+//      «пора запускать» (LoadDueRunRows), «требует внимания», сводка состояний.
+//   6. Журнал действий (UNAVAILABILITY_LOG), журнал выполненных запусков (UNAVAILABILITY_RUN_LOG)
+//      и монитор системы (UnavailMonitorText).
+//   7. Диагностика для стенда: CheckUnavailStorage и проверка колонок схемы.
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	// ---- База данных и таблицы (идентификаторы = native_name) ----
+	UNV_DB_ID = "CONNECT_SNG_DB";                // ← База данных репозитория (подключение СНГ)
+	UNV_TABLE = "UNAVAILABILITY";                // ← таблица периодов недоступности
+	UNV_PLAN_TABLE = "UNAVAILABILITY_PLAN";      // ← таблица планов переноса
+	// ---- Поля таблицы недоступностей ----
+	// Период недоступности: True — по одной колонке «дата и время» на границу (START_DT/END_DT),
+	// False — раздельные колонки START_DATE/START_TIME и END_DATE/END_TIME
+	UNV_PERIOD_SINGLE_COLUMN = True;
+	UNV_F_KEY = "UNAVAIL_ID";                    // ключ записи (число, MB.GenerateKey)
+	UNV_F_START_DT = "START_DT";                 // начало недоступности (дата и время)
+	UNV_F_END_DT = "END_DT";                     // окончание недоступности (дата и время)
+	UNV_F_START_DATE = "START_DATE";             // (раздельная схема) дата начала
+	UNV_F_START_TIME = "START_TIME";             // (раздельная схема) время начала
+	UNV_F_END_DATE = "END_DATE";                 // (раздельная схема) дата окончания
+	UNV_F_END_TIME = "END_TIME";                 // (раздельная схема) время окончания
+	UNV_F_AUTHOR = "AUTHOR";                     // автор записи
+	UNV_F_CHANGED = "LAST_CHANGED";              // время последнего изменения записи
+	// ---- Поля таблицы планов ----
+	PLN_F_KEY = "UNAVAIL_ID";                    // ссылка на запись недоступности
+	PLN_F_SAVED_AT = "SAVED_AT";                 // когда сохранён срез плана
+	PLN_F_AUTHOR = "AUTHOR";                     // кто сохранил план
+	PLN_F_TASK_ID = "TASK_ID";
+	PLN_F_TASK_NAME = "TASK_NAME";
+	PLN_F_BA = "BA_NAME";
+	PLN_F_RESP = "RESPONSIBLE_USER";
+	PLN_F_START = "START_TIME_ORIGINAL";
+	PLN_F_END = "END_TIME_ORIGINAL";
+	PLN_F_SPAN = "TIME_SPAN";
+	PLN_F_NEW_START = "START_TIME_NEW";
+	PLN_F_DONE_AT = "DONE_AT";                   // когда разовый запуск фактически выполнен (диспетчер)
+	// ---- Состояние разового запуска (колонки таблицы плана, миграция run-runs) ----
+	PLN_F_RUN_STATE = "RUN_STATE";               // QUEUED / RUNNING / DONE / FAILED
+	PLN_F_STARTED_AT = "STARTED_AT";             // когда диспетчер взял строку в работу
+	PLN_F_FINISHED_AT = "FINISHED_AT";           // когда попытка завершилась
+	PLN_F_ATTEMPTS = "ATTEMPTS";                 // число попыток выполнения
+	PLN_F_ERROR_TEXT = "ERROR_TEXT";             // текст ошибки последней попытки
+	RUN_STATE_QUEUED = "QUEUED";
+	RUN_STATE_RUNNING = "RUNNING";
+	RUN_STATE_DONE = "DONE";
+	RUN_STATE_FAILED = "FAILED";
+	// Сколько раз максимум пытаться выполнить один разовый запуск (защита от «зацикливания»)
+	UNV_MAX_ATTEMPTS = 3;
+	// Через сколько минут «зависший» RUNNING считается брошенным (процесс упал) и возвращается в очередь
+	UNV_STUCK_MINUTES = 30;
+	// ---- Журнал действий (таблица UNAVAILABILITY_LOG) ----
+	UNV_LOG_TABLE = "UNAVAILABILITY_LOG";
+	LOG_F_ID = "LOG_ID";
+	LOG_F_AT = "LOG_AT";
+	LOG_F_AUTHOR = "AUTHOR";
+	LOG_F_KEY = "UNAVAIL_ID";
+	LOG_F_EVENT = "EVENT_NAME";
+	LOG_F_DETAILS = "DETAILS";
+	LOG_EV_RECORD_ADD = "RECORD_ADD";            // заведена запись о недоступности
+	LOG_EV_RECORD_UPD = "RECORD_UPD";            // изменена запись о недоступности
+	LOG_EV_RECORD_DEL = "RECORD_DEL";            // удалена запись о недоступности
+	LOG_EV_PLAN_SAVE = "PLAN_SAVE";              // сохранён срез плана
+	LOG_EV_PLAN_DEL = "PLAN_DEL";                // удалён срез плана
+	LOG_EV_PLAN_LOAD = "PLAN_LOAD";              // план загружен из таблицы в форму
+	LOG_EV_RUN_CLAIM = "RUN_CLAIM";              // диспетчер взял запуск в работу
+	LOG_EV_RUN_DONE = "RUN_DONE";                // запуск выполнен
+	LOG_EV_RUN_FAIL = "RUN_FAIL";                // запуск завершился ошибкой
+	LOG_EV_RUN_RESET = "RUN_RESET";              // «зависшие» запуски возвращены в очередь
+	// ---- Журнал ВЫПОЛНЕННЫХ разовых запусков (таблица UNAVAILABILITY_RUN_LOG) ----
+	// История попыток диспетчера: одна строка = одна попытка (выполнено / ошибка / пропуск / сухой
+	// прогон). Колонки RUN_STATE/ATTEMPTS в плане показывают ТЕКУЩЕЕ состояние, а этот журнал — историю.
+	UNV_RUN_LOG_TABLE = "UNAVAILABILITY_RUN_LOG";
+	RL_F_ID = "RUN_ID";                // ключ записи журнала (identity)
+	RL_F_AT = "RUN_AT";                // когда записана попытка (серверное время)
+	RL_F_KEY = "UNAVAIL_ID";           // запись недоступности (может быть null)
+	RL_F_TASK_ID = "TASK_ID";
+	RL_F_TASK_NAME = "TASK_NAME";
+	RL_F_PLANNED = "PLANNED_AT";       // плановое время запуска (START_TIME_NEW строки плана)
+	RL_F_STARTED = "STARTED_AT";       // начало попытки
+	RL_F_FINISHED = "FINISHED_AT";     // окончание попытки
+	RL_F_STATE = "RUN_STATE";          // DONE / FAILED / SKIPPED / DRY_RUN
+	RL_F_ATTEMPT = "ATTEMPT";          // номер попытки (как ATTEMPTS в плане)
+	RL_F_DURATION = "DURATION_SEC";    // длительность попытки, секунд
+	RL_F_ERROR = "ERROR_TEXT";         // текст ошибки/причины пропуска
+	RL_F_AUTHOR = "AUTHOR";            // кто выполнял (LogonSession)
+	RL_F_DRY = "IS_DRY_RUN";           // True — сухой прогон: задача не запускалась
+	// Состояния только журнала запусков (в таблице плана их нет — там QUEUED/RUNNING/DONE/FAILED)
+	RUN_STATE_SKIPPED = "SKIPPED";     // задача занята — попытка пропущена
+	RUN_STATE_DRY_RUN = "DRY_RUN";     // сухой прогон: задача не запускалась
+	// Как писать поля времени (только для раздельной схемы UNV_PERIOD_SINGLE_COLUMN = False):
+	// True — текстом 'ЧЧ:ММ', False — датой '1900-01-01 ЧЧ:ММ:00'
+	UNV_TIME_AS_TEXT = True;
+	// Решения по задаче (значения = константы UnavailabilityPlanner: DECISION_SKIP/RESCHEDULE)
+	UNV_DECISION_SKIP = "SKIP";
+	UNV_DECISION_RESCHEDULE = "RESCHEDULE";
+	UNV_CRLF = #13 + #10;
+
+// --- Запись о недоступности (период простоя) ---
+Class CUnavailRecord: Object
+	Public Key: Integer;            // UNAVAIL_ID
+	Public StartDt: DateTime;       // дата + время начала
+	Public EndDt: DateTime;         // дата + время окончания
+	Public Author: String;          // автор записи
+	Public ChangedAt: DateTime;     // время последнего изменения
+End Class CUnavailRecord;
+
+// --- Строка сохранённого плана (что и когда запускать) ---
+Class CUnavailStoredRun: Object
+	Public Key: Integer;            // запись недоступности (нужно диспетчеру для отметок)
+	Public TaskId: String;
+	Public TaskName: String;        // TASK_NAME (нужно журналу выполненных запусков)
+	Public NewStart: DateTime;
+	Public HasNewStart: Boolean;    // False = по задаче решение «не запускать»
+	Public RunState: String;        // RUN_STATE: QUEUED/RUNNING/DONE/FAILED
+	Public Attempts: Integer;       // ATTEMPTS
+	Public ErrorText: String;       // ERROR_TEXT последней попытки
+End Class CUnavailStoredRun;
+
+// --- Строка журнала действий по недоступности ---
+Class CUnavailLogRow: Object
+	Public LogId: Integer;
+	Public At: DateTime;
+	Public Author: String;
+	Public Key: Integer;            // запись недоступности (0 — не привязано)
+	Public Event_: String;          // имя события (колонка EVENT_NAME; «_» — чтобы не спорить с ключевым словом)
+	Public Details: String;
+End Class CUnavailLogRow;
+
+// --- Строка журнала ВЫПОЛНЕННЫХ разовых запусков (UNAVAILABILITY_RUN_LOG) ---
+Class CUnavailRunLogRow: Object
+	Public LogId: Integer;          // RUN_ID
+	Public At: DateTime;            // RUN_AT (когда записана попытка)
+	Public Key: Integer;            // UNAVAIL_ID (0 — не привязано к записи)
+	Public TaskId: String;          // TASK_ID
+	Public TaskName: String;        // TASK_NAME
+	Public PlannedAt: DateTime;     // PLANNED_AT (плановое время разового запуска)
+	Public StartedAt: DateTime;     // STARTED_AT
+	Public FinishedAt: DateTime;    // FINISHED_AT
+	Public State: String;           // DONE / FAILED / SKIPPED / DRY_RUN
+	Public Attempt: Integer;        // ATTEMPT (номер попытки)
+	Public DurationSec: Integer;    // DURATION_SEC
+	Public ErrorText: String;       // ERROR_TEXT
+	Public Author: String;          // AUTHOR (кто выполнял)
+	Public DryRun: Boolean;         // True — сухой прогон (State = DRY_RUN)
+End Class CUnavailRunLogRow;
+
+// --- Полная строка сохранённого плана (для просмотра/выгрузки) ---
+Class CUnavailStoredPlanRow: Object
+	Public Key: Integer;            // UNAVAIL_ID
+	Public SavedAt: DateTime;       // SAVED_AT
+	Public Author: String;          // AUTHOR
+	Public TaskId: String;          // TASK_ID
+	Public TaskName: String;        // TASK_NAME
+	Public BaName: String;          // BA_NAME
+	Public ResponsibleUser: String; // RESPONSIBLE_USER
+	Public StartOriginal: DateTime; // START_TIME_ORIGINAL
+	Public EndOriginal: DateTime;   // END_TIME_ORIGINAL
+	Public SpanText: String;        // TIME_SPAN (ЧЧ:ММ:СС)
+	Public NewStart: DateTime;      // START_TIME_NEW
+	Public HasNewStart: Boolean;    // заполнено ли START_TIME_NEW
+	Public DoneAt: DateTime;        // DONE_AT
+	Public HasDoneAt: Boolean;      // выполнен ли разовый запуск
+	Public RunState: String;        // RUN_STATE: QUEUED/RUNNING/DONE/FAILED
+	Public Attempts: Integer;       // ATTEMPTS
+	Public StartedAt: DateTime;     // STARTED_AT
+	Public FinishedAt: DateTime;    // FINISHED_AT
+	Public ErrorText: String;       // ERROR_TEXT
+End Class CUnavailStoredPlanRow;
+
+// --- Число двумя разрядами ---
+Function UnvTwoDigits(V: Integer): String;
+Begin
+	If V < 10 Then
+		Return "0" + V.ToString;
+	End If;
+	Return V.ToString;
+End Function UnvTwoDigits;
+
+// --- Строковый литерал для SQL (одиночные кавычки удваиваются) ---
+Function UnvSqlStr(S: String): String;
+Begin
+	Return "'" + String.Replace(S, "'", "''") + "'";
+End Function UnvSqlStr;
+
+// --- Литерал даты-времени для SQL: 'ГГГГ-ММ-ДД ЧЧ:ММ:СС' ---
+// ISO-формат понимают MS SQL / PostgreSQL / MySQL; для Oracle замените на TO_DATE(...)
+Function UnvSqlDate(D: DateTime): String;
+Begin
+	Return "'" + D.Year.ToString + "-" + UnvTwoDigits(D.Month) + "-" + UnvTwoDigits(D.Day) + " "
+		+ UnvTwoDigits(D.Hour) + ":" + UnvTwoDigits(D.Minute) + ":" + UnvTwoDigits(D.Second) + "'";
+End Function UnvSqlDate;
+
+// --- Литерал только даты (время 00:00:00) ---
+Function UnvSqlDatePart(D: DateTime): String;
+Begin
+	Return "'" + D.Year.ToString + "-" + UnvTwoDigits(D.Month) + "-" + UnvTwoDigits(D.Day) + " 00:00:00'";
+End Function UnvSqlDatePart;
+
+// --- Литерал времени: текст 'ЧЧ:ММ' либо дата '1900-01-01 ЧЧ:ММ:00' ---
+Function UnvSqlTimePart(D: DateTime): String;
+Begin
+	If UNV_TIME_AS_TEXT Then
+		Return "'" + UnvTwoDigits(D.Hour) + ":" + UnvTwoDigits(D.Minute) + "'";
+	End If;
+	Return "'1900-01-01 " + UnvTwoDigits(D.Hour) + ":" + UnvTwoDigits(D.Minute) + ":00'";
+End Function UnvSqlTimePart;
+
+// --- Текущий пользователь (для поля «автор записи») ---
+Function GetCurrentAuthor: String;
+Var
+	MB: IMetabase;
+	S: String;
+Begin
+	S := "";
+	Try
+		MB := MetabaseClass.Active;
+		S := MB.LogonSession.UserDescription;      // полное имя пользователя для протокола
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: не удалось получить пользователя — " + e.Message);
+		S := "";
+	End Try;
+	Return S;
+End Function GetCurrentAuthor;
+
+// --- Время сервера СУБД (для поля «время последнего изменения») ---
+Function GetServerStamp: DateTime;
+Var
+	MB: IMetabase;
+	D: DateTime;
+Begin
+	D := DateTime.Now;
+	Try
+		MB := MetabaseClass.Active;
+		D := MB.GetCurrentStamp;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: время сервера недоступно — " + e.Message);
+		D := DateTime.Now;
+	End Try;
+	Return D;
+End Function GetServerStamp;
+
+// --- Открыть базу данных репозитория ---
+Function GetUnavailDb: IDatabaseInstance;
+Var
+	MB: IMetabase;
+Begin
+	MB := MetabaseClass.Active;
+	Return MB.ItemById(UNV_DB_ID).Open(Null) As IDatabaseInstance;
+End Function GetUnavailDb;
+
+// --- Выполнить SQL без выборки (INSERT/UPDATE/DELETE). Возврат: число строк, -1 — ошибка ---
+Function ExecUnavailSql(Sql: String): Integer;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Tran: IConnectionTransaction;
+	Cnt: Integer;
+Begin
+	Cnt := -1;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Tran := Connect.StartTransaction(False);
+		Try
+			Cnt := Command.Execute;
+			Tran.Commit;
+		Except On e: Exception Do
+			Tran.Rollback;
+			Debug.WriteLine("Недоступность: SQL откат — " + e.Message);
+			Cnt := -1;
+		End Try;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: SQL — " + e.Message);
+		Cnt := -1;
+	End Try;
+	Return Cnt;
+End Function ExecUnavailSql;
+
+// --- Выполнить НАБОР SQL-операторов в ОДНОЙ транзакции (или откатить все). True — успех ---
+Function ExecUnavailSqlMany(Statements: ArrayList): Boolean;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Tran: IConnectionTransaction;
+	Ok: Boolean;
+	I: Integer;
+Begin
+	Ok := False;
+	If IsNull(Statements) Then
+		Return False;
+	End If;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Tran := Connect.StartTransaction(False);
+		Try
+			For I := 0 To Statements.Count - 1 Do
+				Command := Connect.CreateCommand(Statements.Item(I) As String);
+				Command.Execute;
+				Command.Close;
+			End For;
+			Tran.Commit;
+			Ok := True;
+		Except On e: Exception Do
+			Tran.Rollback;
+			Debug.WriteLine("Недоступность: набор SQL откачен — " + e.Message);
+			Ok := False;
+		End Try;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: набор SQL — " + e.Message);
+		Ok := False;
+	End Try;
+	Return Ok;
+End Function ExecUnavailSqlMany;
+
+// --- Ответственные: запись строки в таблицу ответственных (RESPONSIBLE_FOR_TASK) ---
+// Responsible = "" — строку удаляем (ответственный снимается).
+// Mail = Null — колонку почты НЕ трогаем (например, имя меняют из меню, а MAIL уже заполнен);
+// Mail = "" — почта очищается; иначе записывается новое значение.
+// ⚠ Почта пишется И в INSERT, и в UPDATE: раньше колонка MAIL указывалась только в части
+// «on conflict do update», поэтому у НОВОЙ строки (у задачи ещё нет ответственного) адрес терялся —
+// из-за этого уведомления не уходили. Если колонки MAIL в базе нет (миграция не выполнена),
+// запись повторяется без неё, чтобы не потерять ФИО.
+// Имена таблицы и полей передаёт вызывающий модуль (UnavailabilityPlanner: RESP_TABLE_ID/RESP_FIELD_*).
+// По физической таблице есть уникальный индекс по TASK_ID (docs/sql/responsible-for-task-postgres.sql),
+// поэтому «вставка или обновление» делается одной командой PostgreSQL: insert … on conflict … do update.
+// Возврат: True — успех (для удаления — True и при отсутствии строки).
+Function SaveTaskResponsible(TableId: String; TaskField: String; BaField: String; RespField: String;
+	MailField: String; TaskId: String; BaName: String; Responsible: String; Mail: Variant): Boolean;
+Var
+	Sql, SqlNoMail, SetMail, Cols, Vals, MailValue: String;
+	NewResponsible: String;
+Begin
+	If (TableId = "") Or (TaskId = "") Then
+		Return False;
+	End If;
+	NewResponsible := String.Trim(Responsible);
+	If NewResponsible = "" Then
+		Sql := "delete from " + TableId + " where " + TaskField + " = " + UnvSqlStr(TaskId);
+		Return ExecUnavailSql(Sql) >= 0;
+	End If;
+	SetMail := "";
+	MailValue := "";
+	If (Not IsNull(Mail)) And (MailField <> "") Then
+		MailValue := String.Trim(UnvVarToStr(Mail));
+		SetMail := ", " + MailField + " = " + UnvSqlStr(MailValue);
+	End If;
+	Cols := TaskField + ", " + BaField + ", " + RespField;
+	Vals := UnvSqlStr(TaskId) + ", " + UnvSqlStr(BaName) + ", " + UnvSqlStr(NewResponsible);
+	If SetMail <> "" Then
+		Cols := Cols + ", " + MailField;          // ← иначе у НОВОЙ строки почта терялась
+		Vals := Vals + ", " + UnvSqlStr(MailValue);
+	End If;
+	Sql := "insert into " + TableId + " (" + Cols + ") values (" + Vals + ")"
+		+ " on conflict (" + TaskField + ") do update set "
+		+ BaField + " = excluded." + BaField + ", " + RespField + " = excluded." + RespField
+		+ SetMail;
+	If ExecUnavailSql(Sql) >= 0 Then
+		Return True;
+	End If;
+	If SetMail = "" Then
+		Return False;
+	End If;
+	// База без колонки MAIL (миграция не выполнена) — повторяем запись без неё, чтобы не терять ФИО
+	SqlNoMail := "insert into " + TableId + " (" + TaskField + ", " + BaField + ", " + RespField + ") values ("
+		+ UnvSqlStr(TaskId) + ", " + UnvSqlStr(BaName) + ", " + UnvSqlStr(NewResponsible) + ")"
+		+ " on conflict (" + TaskField + ") do update set "
+		+ BaField + " = excluded." + BaField + ", " + RespField + " = excluded." + RespField;
+	Debug.WriteLine("Недоступность: запись ответственного без MAIL (нет колонки? выполните миграцию) — "
+		+ TaskId + " / " + NewResponsible);
+	Return ExecUnavailSql(SqlNoMail) >= 0;
+End Function SaveTaskResponsible;
+
+// --- Значения из курсора (Variant) в строку/число/дату ---
+Function UnvVarToStr(V: Variant): String;
+Var
+	S: String;
+Begin
+	S := "";
+	Try
+		S := V;
+	Except On e: Exception Do
+		S := "";
+	End Try;
+	Return S;
+End Function UnvVarToStr;
+
+Function UnvVarToInt(V: Variant): Integer;
+Var
+	I: Integer;
+Begin
+	I := 0;
+	Try
+		I := V;
+	Except On e: Exception Do
+		I := 0;
+	End Try;
+	Return I;
+End Function UnvVarToInt;
+
+Function UnvVarToDate(V: Variant): DateTime;
+Var
+	D: DateTime;
+Begin
+	D := DateTime.Now;
+	Try
+		D := V;
+	Except On e: Exception Do
+		D := DateTime.Now;
+	End Try;
+	Return D;
+End Function UnvVarToDate;
+
+// --- Собрать дату+время (в таблице дата и время хранятся отдельными полями) ---
+Function ComposeDateAndTime(D: DateTime; T: DateTime): DateTime;
+Begin
+	Return DateTime.Compose(D.Year, D.Month, D.Day, T.Hour, T.Minute, 0, 0);
+End Function ComposeDateAndTime;
+
+// --- Список колонок периода для SELECT (зависит от схемы таблицы) ---
+Function UnvPeriodSelectSql: String;
+Begin
+	If UNV_PERIOD_SINGLE_COLUMN Then
+		Return UNV_F_KEY + ", " + UNV_F_START_DT + ", " + UNV_F_END_DT + ", " + UNV_F_AUTHOR
+			+ ", " + UNV_F_CHANGED;
+	End If;
+	Return UNV_F_KEY + ", " + UNV_F_START_DATE + ", " + UNV_F_START_TIME + ", " + UNV_F_END_DATE
+		+ ", " + UNV_F_END_TIME + ", " + UNV_F_AUTHOR + ", " + UNV_F_CHANGED;
+End Function UnvPeriodSelectSql;
+
+// --- Список колонок периода для INSERT (зависит от схемы таблицы) ---
+Function UnvPeriodColumnsSql: String;
+Begin
+	If UNV_PERIOD_SINGLE_COLUMN Then
+		Return UNV_F_KEY + ", " + UNV_F_START_DT + ", " + UNV_F_END_DT + ", " + UNV_F_AUTHOR
+			+ ", " + UNV_F_CHANGED;
+	End If;
+	Return UNV_F_KEY + ", " + UNV_F_START_DATE + ", " + UNV_F_START_TIME + ", " + UNV_F_END_DATE
+		+ ", " + UNV_F_END_TIME + ", " + UNV_F_AUTHOR + ", " + UNV_F_CHANGED;
+End Function UnvPeriodColumnsSql;
+
+// --- Список значений периода для INSERT (в порядке колонок UnvPeriodColumnsSql) ---
+Function UnvPeriodInsertValuesSql(Key: Integer; StartDt: DateTime; EndDt: DateTime; Who: String; Stamp: DateTime): String;
+Begin
+	If UNV_PERIOD_SINGLE_COLUMN Then
+		Return Key.ToString + ", " + UnvSqlDate(StartDt) + ", " + UnvSqlDate(EndDt) + ", "
+			+ UnvSqlStr(Who) + ", " + UnvSqlDate(Stamp);
+	End If;
+	Return Key.ToString + ", " + UnvSqlDatePart(StartDt) + ", " + UnvSqlTimePart(StartDt) + ", "
+		+ UnvSqlDatePart(EndDt) + ", " + UnvSqlTimePart(EndDt) + ", "
+		+ UnvSqlStr(Who) + ", " + UnvSqlDate(Stamp);
+End Function UnvPeriodInsertValuesSql;
+
+// --- Набор «колонка = значение» периода для UPDATE ---
+Function UnvPeriodSetSql(StartDt: DateTime; EndDt: DateTime; Who: String; Stamp: DateTime): String;
+Begin
+	If UNV_PERIOD_SINGLE_COLUMN Then
+		Return UNV_F_START_DT + " = " + UnvSqlDate(StartDt) + ", "
+			+ UNV_F_END_DT + " = " + UnvSqlDate(EndDt) + ", "
+			+ UNV_F_AUTHOR + " = " + UnvSqlStr(Who) + ", "
+			+ UNV_F_CHANGED + " = " + UnvSqlDate(Stamp);
+	End If;
+	Return UNV_F_START_DATE + " = " + UnvSqlDatePart(StartDt) + ", "
+		+ UNV_F_START_TIME + " = " + UnvSqlTimePart(StartDt) + ", "
+		+ UNV_F_END_DATE + " = " + UnvSqlDatePart(EndDt) + ", "
+		+ UNV_F_END_TIME + " = " + UnvSqlTimePart(EndDt) + ", "
+		+ UNV_F_AUTHOR + " = " + UnvSqlStr(Who) + ", "
+		+ UNV_F_CHANGED + " = " + UnvSqlDate(Stamp);
+End Function UnvPeriodSetSql;
+
+// --- Прочитать все записи о недоступности (по возрастанию начала периода) ---
+Function LoadUnavailRecords: ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Records: ArrayList;
+	Rec: CUnavailRecord;
+	Sql, OrderBy: String;
+Begin
+	Records := New ArrayList.Create;
+	OrderBy := UNV_F_START_DT;                       // схема «дата и время» в одной колонке
+	If Not UNV_PERIOD_SINGLE_COLUMN Then
+		OrderBy := UNV_F_START_DATE + ", " + UNV_F_START_TIME;
+	End If;
+	Sql := "select " + UnvPeriodSelectSql + " from " + UNV_TABLE + " order by " + OrderBy;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			Rec := New CUnavailRecord.Create;
+			Rec.Key := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			If UNV_PERIOD_SINGLE_COLUMN Then
+				// одна колонка = дата и время
+				Rec.StartDt := UnvVarToDate(Cursor.Fields.Item(1).Value);
+				Rec.EndDt := UnvVarToDate(Cursor.Fields.Item(2).Value);
+				Rec.Author := UnvVarToStr(Cursor.Fields.Item(3).Value);
+				Rec.ChangedAt := UnvVarToDate(Cursor.Fields.Item(4).Value);
+			Else
+				// раздельные колонки: дата + время
+				Rec.StartDt := ComposeDateAndTime(UnvVarToDate(Cursor.Fields.Item(1).Value),
+					UnvVarToDate(Cursor.Fields.Item(2).Value));
+				Rec.EndDt := ComposeDateAndTime(UnvVarToDate(Cursor.Fields.Item(3).Value),
+					UnvVarToDate(Cursor.Fields.Item(4).Value));
+				Rec.Author := UnvVarToStr(Cursor.Fields.Item(5).Value);
+				Rec.ChangedAt := UnvVarToDate(Cursor.Fields.Item(6).Value);
+			End If;
+			Records.Add(Rec);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение записей — " + e.Message);
+		Records.Clear;
+	End Try;
+	Return Records;
+End Function LoadUnavailRecords;
+
+// --- Добавить запись о недоступности. Возврат: ключ записи (0 — ошибка) ---
+Function AddUnavailRecord(StartDt: DateTime; EndDt: DateTime; Author: String): Integer;
+Var
+	MB: IMetabase;
+	Key: Integer;
+	Who: String;
+	Sql: String;
+Begin
+	Key := 0;
+	Who := Author;
+	If Who = "" Then
+		Who := GetCurrentAuthor;
+	End If;
+	MB := MetabaseClass.Active;
+	Key := MB.GenerateKey;
+	Sql := "insert into " + UNV_TABLE + " (" + UnvPeriodColumnsSql + ") values ("
+		+ UnvPeriodInsertValuesSql(Key, StartDt, EndDt, Who, GetServerStamp) + ")";
+	If ExecUnavailSql(Sql) < 0 Then
+		Key := 0;
+	Else
+		WriteUnavailLog(Key, LOG_EV_RECORD_ADD, "период " + StartDt.ToString + " — " + EndDt.ToString);
+	End If;
+	Return Key;
+End Function AddUnavailRecord;
+
+// --- Изменить запись (автор и время последнего изменения обновляются) ---
+Function UpdateUnavailRecord(Key: Integer; StartDt: DateTime; EndDt: DateTime; Author: String): Boolean;
+Var
+	Who, Sql: String;
+	Cnt: Integer;
+Begin
+	Who := Author;
+	If Who = "" Then
+		Who := GetCurrentAuthor;
+	End If;
+	Sql := "update " + UNV_TABLE + " set "
+		+ UnvPeriodSetSql(StartDt, EndDt, Who, GetServerStamp)
+		+ " where " + UNV_F_KEY + " = " + Key.ToString;
+	Cnt := ExecUnavailSql(Sql);
+	If Cnt < 0 Then
+		Return False;
+	End If;
+	WriteUnavailLog(Key, LOG_EV_RECORD_UPD, "период " + StartDt.ToString + " — " + EndDt.ToString);
+	Return True;
+End Function UpdateUnavailRecord;
+
+// --- Удалить запись вместе с сохранёнными по ней планами (одной транзакцией) ---
+Function DeleteUnavailRecord(Key: Integer): Boolean;
+Var
+	Statements: ArrayList;
+Begin
+	If Key = 0 Then
+		Return False;
+	End If;
+	Statements := New ArrayList.Create;
+	Statements.Add("delete from " + UNV_PLAN_TABLE + " where " + PLN_F_KEY + " = " + Key.ToString);
+	Statements.Add("delete from " + UNV_TABLE + " where " + UNV_F_KEY + " = " + Key.ToString);
+	If Not ExecUnavailSqlMany(Statements) Then
+		Return False;
+	End If;
+	WriteUnavailLog(Key, LOG_EV_RECORD_DEL, "запись удалена вместе с планом");
+	Return True;
+End Function DeleteUnavailRecord;
+
+// --- Найти запись по ключу ---
+Function FindUnavailRecord(Records: ArrayList; Key: Integer): CUnavailRecord;
+Var
+	I: Integer;
+Begin
+	If IsNull(Records) Then
+		Return Null;
+	End If;
+	For I := 0 To Records.Count - 1 Do
+		If (Records.Item(I) As CUnavailRecord).Key = Key Then
+			Return Records.Item(I) As CUnavailRecord;
+		End If;
+	End For;
+	Return Null;
+End Function FindUnavailRecord;
+
+// --- Текст записи (журнал/подсказка) ---
+Function UnavailRecordText(Rec: CUnavailRecord): String;
+Begin
+	If IsNull(Rec) Then
+		Return "";
+	End If;
+	Return Rec.Key.ToString + ": " + Rec.StartDt.ToString + " — " + Rec.EndDt.ToString
+		+ " (" + Rec.Author + ", изменено " + Rec.ChangedAt.ToString + ")";
+End Function UnavailRecordText;
+
+// --- Сохранить план переноса по записи недоступности (прежний срез по этой записи удаляется) ---
+// Все операторы идут ОДНОЙ транзакцией: либо записан весь срез, либо ничего (нет «дырявого» плана).
+// Сначала вставляются строки нового среза (с общим SAVED_AT), затем удаляются строки прежних срезов.
+Function SavePlanToTable(Key: Integer; Impacts: ArrayList): Integer;
+Var
+	Impact: CUnavailImpact;
+	Stamp: DateTime;
+	Author, StartNew, Sql: String;
+	Statements: ArrayList;
+	Saved, I: Integer;
+Begin
+	Saved := 0;
+	If Key = 0 Then
+		Return 0;
+	End If;
+	If IsNull(Impacts) Then
+		Return 0;
+	End If;
+	If Impacts.Count = 0 Then
+		Return 0;                        // пустой план не сохраняем и прежний не трогаем
+	End If;
+	Stamp := GetServerStamp;
+	Author := GetCurrentAuthor;
+	Statements := New ArrayList.Create;
+	For I := 0 To Impacts.Count - 1 Do
+		Impact := Impacts.Item(I) As CUnavailImpact;
+		StartNew := "null";                        // пусто = решение «не запускать»
+		If Impact.Decision = UNV_DECISION_RESCHEDULE Then
+			StartNew := UnvSqlDate(Impact.NewStart);
+		End If;
+		Sql := "insert into " + UNV_PLAN_TABLE + " (" + PLN_F_KEY + ", " + PLN_F_SAVED_AT + ", "
+			+ PLN_F_AUTHOR + ", " + PLN_F_TASK_ID + ", " + PLN_F_TASK_NAME + ", " + PLN_F_BA + ", "
+			+ PLN_F_RESP + ", " + PLN_F_START + ", " + PLN_F_END + ", " + PLN_F_SPAN + ", "
+			+ PLN_F_NEW_START + ", " + PLN_F_RUN_STATE + ", " + PLN_F_ATTEMPTS + ") values ("
+			+ Key.ToString + ", " + UnvSqlDate(Stamp) + ", "
+			+ UnvSqlStr(Author) + ", "
+			+ UnvSqlStr(Impact.Id) + ", " + UnvSqlStr(Impact.Name) + ", "
+			+ UnvSqlStr(Impact.BusinessApp) + ", " + UnvSqlStr(Impact.ResponsibleUser) + ", "
+			+ UnvSqlDate(Impact.RunStart) + ", " + UnvSqlDate(Impact.RunFinish) + ", "
+			+ UnvSqlStr(UnavailDurationText(Double.RoundInt(Impact.AvgSeconds))) + ", "
+			+ StartNew + ", " + UnvSqlStr(RUN_STATE_QUEUED) + ", 0)";
+		Statements.Add(Sql);
+	End For;
+	Saved := Statements.Count;
+	// прежние срезы (другие SAVED_AT) удаляются в той же транзакции, уже после вставки нового
+	Statements.Add("delete from " + UNV_PLAN_TABLE + " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " and " + PLN_F_SAVED_AT + " <> " + UnvSqlDate(Stamp));
+	If Not ExecUnavailSqlMany(Statements) Then
+		Return 0;
+	End If;
+	WriteUnavailLog(Key, LOG_EV_PLAN_SAVE, "строк " + Saved.ToString + " (автор " + Author + ")");
+	Return Saved;
+End Function SavePlanToTable;
+
+// --- Удалить сохранённый план записи (отмена плана, если простой отменили/перенесли) ---
+Function DeleteStoredPlan(Key: Integer): Boolean;
+Var
+	Cnt: Integer;
+Begin
+	If Key = 0 Then
+		Return False;
+	End If;
+	Cnt := ExecUnavailSql("delete from " + UNV_PLAN_TABLE + " where " + PLN_F_KEY + " = " + Key.ToString);
+	If Cnt < 0 Then
+		Return False;
+	End If;
+	WriteUnavailLog(Key, LOG_EV_PLAN_DEL, "удалено строк " + Cnt.ToString);
+	Return True;
+End Function DeleteStoredPlan;
+
+// --- «План устарел»: срез плана сохранён раньше, чем запись недоступности была изменена ---
+Function IsPlanStale(Key: Integer): Boolean;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Sql: String;
+	Stale: Boolean;
+Begin
+	Stale := False;
+	If Key = 0 Then
+		Return False;
+	End If;
+	Sql := "select count(*) from " + UNV_PLAN_TABLE + " p, " + UNV_TABLE + " u"
+		+ " where p." + PLN_F_KEY + " = " + Key.ToString
+		+ " and u." + UNV_F_KEY + " = p." + PLN_F_KEY
+		+ " and p." + PLN_F_SAVED_AT + " < u." + UNV_F_CHANGED;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		If Not Cursor.Eof Then
+			Stale := UnvVarToInt(Cursor.Fields.Item(0).Value) > 0;
+		End If;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: проверка актуальности плана — " + e.Message);
+		Stale := False;
+	End Try;
+	Return Stale;
+End Function IsPlanStale;
+
+// --- Есть ли по записи недоступности сохранённый план ---
+Function HasStoredPlan(Key: Integer): Boolean;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Res: Boolean;
+	Sql: String;
+Begin
+	Res := False;
+	If Key = 0 Then
+		Return False;
+	End If;
+	Sql := "select " + PLN_F_KEY + " from " + UNV_PLAN_TABLE
+		+ " where " + PLN_F_KEY + " = " + Key.ToString;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		If Not Cursor.Eof Then
+			Res := True;
+		End If;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: проверка плана — " + e.Message);
+		Res := False;
+	End Try;
+	Return Res;
+End Function HasStoredPlan;
+
+// --- Полный сохранённый план записи (для просмотра в UI) ---
+Function LoadStoredPlanRows(Key: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	Row: CUnavailStoredPlanRow;
+	Sql: String;
+Begin
+	Rows := New ArrayList.Create;
+	If Key = 0 Then
+		Return Rows;
+	End If;
+	Sql := "select " + PLN_F_KEY + ", " + PLN_F_SAVED_AT + ", " + PLN_F_AUTHOR + ", " + PLN_F_TASK_ID
+		+ ", " + PLN_F_TASK_NAME + ", " + PLN_F_BA + ", " + PLN_F_RESP + ", " + PLN_F_START + ", "
+		+ PLN_F_END + ", " + PLN_F_SPAN + ", " + PLN_F_NEW_START + ", " + PLN_F_DONE_AT + ", "
+		+ PLN_F_RUN_STATE + ", " + PLN_F_ATTEMPTS + ", " + PLN_F_STARTED_AT + ", " + PLN_F_FINISHED_AT
+		+ ", " + PLN_F_ERROR_TEXT
+		+ " from " + UNV_PLAN_TABLE + " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " order by " + PLN_F_TASK_ID;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			Row := New CUnavailStoredPlanRow.Create;
+			Row.Key := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Row.SavedAt := UnvVarToDate(Cursor.Fields.Item(1).Value);
+			Row.Author := UnvVarToStr(Cursor.Fields.Item(2).Value);
+			Row.TaskId := UnvVarToStr(Cursor.Fields.Item(3).Value);
+			Row.TaskName := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Row.BaName := UnvVarToStr(Cursor.Fields.Item(5).Value);
+			Row.ResponsibleUser := UnvVarToStr(Cursor.Fields.Item(6).Value);
+			Row.StartOriginal := UnvVarToDate(Cursor.Fields.Item(7).Value);
+			Row.EndOriginal := UnvVarToDate(Cursor.Fields.Item(8).Value);
+			Row.SpanText := UnvVarToStr(Cursor.Fields.Item(9).Value);
+			Row.HasNewStart := UnvVarToStr(Cursor.Fields.Item(10).Value) <> "";
+			Row.NewStart := UnvVarToDate(Cursor.Fields.Item(10).Value);
+			Row.HasDoneAt := UnvVarToStr(Cursor.Fields.Item(11).Value) <> "";
+			Row.DoneAt := UnvVarToDate(Cursor.Fields.Item(11).Value);
+			Row.RunState := UnvVarToStr(Cursor.Fields.Item(12).Value);
+			Row.Attempts := UnvVarToInt(Cursor.Fields.Item(13).Value);
+			Row.StartedAt := UnvVarToDate(Cursor.Fields.Item(14).Value);
+			Row.FinishedAt := UnvVarToDate(Cursor.Fields.Item(15).Value);
+			Row.ErrorText := UnvVarToStr(Cursor.Fields.Item(16).Value);
+			Rows.Add(Row);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение плана (полные строки) — " + e.Message);
+		Rows.Clear;
+	End Try;
+	Return Rows;
+End Function LoadStoredPlanRows;
+
+// --- Незапущенные строки плана (START_TIME_NEW заполнено, DONE_AT пусто) — для диспетчера ---
+Function LoadPendingRunRows(Key: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Sql: String;
+Begin
+	Runs := New ArrayList.Create;
+	If Key = 0 Then
+		Return Runs;
+	End If;
+	Sql := "select " + PLN_F_TASK_ID + ", " + PLN_F_NEW_START + ", coalesce(" + PLN_F_RUN_STATE + ", 'QUEUED'), "
+		+ "coalesce(" + PLN_F_ATTEMPTS + ", 0), coalesce(" + PLN_F_ERROR_TEXT + ", '')"
+		+ " from " + UNV_PLAN_TABLE
+		+ " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " and " + PLN_F_NEW_START + " is not null"
+		+ " and " + PLN_F_DONE_AT + " is null"
+		+ " and coalesce(" + PLN_F_RUN_STATE + ", 'QUEUED') <> '" + RUN_STATE_DONE + "'"
+		+ " and coalesce(" + PLN_F_RUN_STATE + ", 'QUEUED') <> '" + RUN_STATE_RUNNING + "'"
+		+ " and coalesce(" + PLN_F_ATTEMPTS + ", 0) < " + UNV_MAX_ATTEMPTS.ToString;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			Run := New CUnavailStoredRun.Create;
+			Run.Key := Key;
+			Run.TaskId := UnvVarToStr(Cursor.Fields.Item(0).Value);
+			Run.HasNewStart := True;
+			Run.NewStart := UnvVarToDate(Cursor.Fields.Item(1).Value);
+			Run.RunState := UnvVarToStr(Cursor.Fields.Item(2).Value);
+			Run.Attempts := UnvVarToInt(Cursor.Fields.Item(3).Value);
+			Run.ErrorText := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Runs.Add(Run);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение незапущенных строк — " + e.Message);
+		Runs.Clear;
+	End Try;
+	Return Runs;
+End Function LoadPendingRunRows;
+
+// --- Отметить разовый запуск выполненным (DONE_AT) ---
+Function MarkPlanRunDone(Key: Integer; TaskId: String; NewStart: DateTime): Boolean;
+Var
+	Sql: String;
+Begin
+	Sql := "update " + UNV_PLAN_TABLE + " set " + PLN_F_DONE_AT + " = " + UnvSqlDate(GetServerStamp)
+		+ " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " and " + PLN_F_TASK_ID + " = " + UnvSqlStr(TaskId)
+		+ " and " + PLN_F_NEW_START + " = " + UnvSqlDate(NewStart)
+		+ " and " + PLN_F_DONE_AT + " is null";
+	Return ExecUnavailSql(Sql) >= 0;
+End Function MarkPlanRunDone;
+
+// --- Диагностика хранилища: доступ к базе и число записей (для проверки на стенде) ---
+Function CheckUnavailStorage: String;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	S: String;
+Begin
+	S := "";
+	Try
+		Db := GetUnavailDb;
+		S := "База данных '" + UNV_DB_ID + "': доступна" + UNV_CRLF;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand("select count(*) from " + UNV_TABLE);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		If Not Cursor.Eof Then
+			S := S + "Записей о недоступности: " + UnvVarToInt(Cursor.Fields.Item(0).Value).ToString + UNV_CRLF;
+		End If;
+		Cursor.Close;
+		Command.Close;
+		Command := Connect.CreateCommand("select count(*) from " + UNV_PLAN_TABLE);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		If Not Cursor.Eof Then
+			S := S + "Строк планов переноса: " + UnvVarToInt(Cursor.Fields.Item(0).Value).ToString + UNV_CRLF;
+		End If;
+		Cursor.Close;
+		Command.Close;
+		// «версия» схемы запусков: есть ли колонки состояния (миграция run-runs)
+		If UnavailColumnExists(Connect, UNV_PLAN_TABLE, PLN_F_RUN_STATE) Then
+			S := S + "Схема запусков: OK (" + PLN_F_RUN_STATE + ", " + PLN_F_ATTEMPTS + ", "
+				+ PLN_F_STARTED_AT + ", " + PLN_F_FINISHED_AT + ", " + PLN_F_ERROR_TEXT + ")" + UNV_CRLF;
+			Command := Connect.CreateCommand("select count(*) from " + UNV_PLAN_TABLE
+				+ " where " + PLN_F_DONE_AT + " is null and " + PLN_F_NEW_START + " is not null"
+				+ " and coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') <> '"
+				+ RUN_STATE_DONE + "'");
+			Command.Parse;
+			Cursor := Command.CreateCursor;
+			If Not Cursor.Eof Then
+				S := S + "Ожидают запуска: " + UnvVarToInt(Cursor.Fields.Item(0).Value).ToString + UNV_CRLF;
+			End If;
+			Cursor.Close;
+			Command.Close;
+		Else
+			S := S + "ВНИМАНИЕ: нет колонки " + PLN_F_RUN_STATE + " — выполните миграцию"
+				+ " docs/sql/unavailability-plan-runs-postgres.sql, иначе нет защиты от двойных запусков"
+				+ UNV_CRLF;
+		End If;
+		// журнал действий (не критичен: без него работа продолжается)
+		If UnavailColumnExists(Connect, UNV_LOG_TABLE, LOG_F_EVENT) Then
+			Command := Connect.CreateCommand("select count(*) from " + UNV_LOG_TABLE);
+			Command.Parse;
+			Cursor := Command.CreateCursor;
+			If Not Cursor.Eof Then
+				S := S + "Записей журнала: " + UnvVarToInt(Cursor.Fields.Item(0).Value).ToString;
+			End If;
+			Cursor.Close;
+			Command.Close;
+		Else
+			S := S + "Журнал " + UNV_LOG_TABLE + " недоступен (не критично)";
+		End If;
+	Except On e: Exception Do
+		S := S + "ОШИБКА: " + e.Message;
+	End Try;
+	Return S;
+End Function CheckUnavailStorage;
+
+// --- Прочитать сохранённый план записи (строки: задача + новое время) ---
+Function LoadPlanFromTable(Key: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Sql: String;
+Begin
+	Runs := New ArrayList.Create;
+	If Key = 0 Then
+		Return Runs;
+	End If;
+	Sql := "select " + PLN_F_TASK_ID + ", " + PLN_F_NEW_START + " from " + UNV_PLAN_TABLE
+		+ " where " + PLN_F_KEY + " = " + Key.ToString;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			Run := New CUnavailStoredRun.Create;
+			Run.TaskId := UnvVarToStr(Cursor.Fields.Item(0).Value);
+			Run.HasNewStart := UnvVarToStr(Cursor.Fields.Item(1).Value) <> "";
+			Run.NewStart := UnvVarToDate(Cursor.Fields.Item(1).Value);
+			Runs.Add(Run);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+		WriteUnavailLog(Key, LOG_EV_PLAN_LOAD, "строк " + Runs.Count.ToString);
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение плана — " + e.Message);
+		Runs.Clear;
+	End Try;
+	Return Runs;
+End Function LoadPlanFromTable;
+
+// --- Применить сохранённый план к записям плана формы (по Id задачи). Возврат: сколько применили ---
+Function ApplyStoredPlanToImpacts(Key: Integer; Impacts: ArrayList): Integer;
+Var
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Impact: CUnavailImpact;
+	I, J, Cnt: Integer;
+	Found: Boolean;
+Begin
+	Cnt := 0;
+	If IsNull(Impacts) Then
+		Return 0;
+	End If;
+	Runs := LoadPlanFromTable(Key);
+	For I := 0 To Runs.Count - 1 Do
+		Run := Runs.Item(I) As CUnavailStoredRun;
+		Found := False;
+		For J := 0 To Impacts.Count - 1 Do
+			Impact := Impacts.Item(J) As CUnavailImpact;
+			If (Not Found) And (Impact.Id = Run.TaskId) Then
+				Found := True;
+				If Run.HasNewStart Then
+					Impact.Decision := UNV_DECISION_RESCHEDULE;
+					Impact.NewStart := Run.NewStart;
+				Else
+					Impact.Decision := UNV_DECISION_SKIP;
+				End If;
+				Cnt := Cnt + 1;
+			End If;
+		End For;
+	End For;
+	Return Cnt;
+End Function ApplyStoredPlanToImpacts;
+
+// --- Выгрузить сохранённый план в текстовый файл формата диспетчера (Id, решение, время) ---
+Function ExportStoredPlanToFile(Key: Integer; Path: String): Integer;
+Var
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Writer: ITextWriter;
+	I, Cnt: Integer;
+Begin
+	Cnt := 0;
+	Runs := LoadPlanFromTable(Key);
+	Try
+		Writer := File.OpenTextWriter(Path, False);
+		// ⚠ Кодировку задаём ДО первой записи — иначе кириллица (названия/фамилии) испортится
+		Try
+			Writer.Encoding := CodePage.UTF8;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: кодировку UTF-8 при выгрузке плана задать не удалось — " + e.Message);
+		End Try;
+		For I := 0 To Runs.Count - 1 Do
+			Run := Runs.Item(I) As CUnavailStoredRun;
+			Writer.WriteLnString(Run.TaskId);
+			If Run.HasNewStart Then
+				Writer.WriteLnString(UNV_DECISION_RESCHEDULE);
+				Writer.WriteLnString(Run.NewStart.ToString);
+			Else
+				Writer.WriteLnString(UNV_DECISION_SKIP);
+				Writer.WriteLnString("");
+			End If;
+			Cnt := Cnt + 1;
+		End For;
+		Writer.Flush;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: выгрузка плана — " + e.Message);
+		Cnt := -1;
+	End Try;
+	Return Cnt;
+End Function ExportStoredPlanToFile;
+
+// ===========================================================================
+// ДИСПЕТЧЕР: «захват» строк плана, состояния запусков, «зависшие» и просроченные
+// ===========================================================================
+
+// --- Выражение SQL «время + N часов» (хвостовое окно после недоступности) ---
+// PostgreSQL: <expr> + interval 'N hours'.  MySQL: date_add(<expr>, interval N hour).
+// MS SQL: dateadd(hour, N, <expr>).  Oracle: <expr> + numtodsinterval(N, 'hour').
+Function UnvSqlAddHours(ExprDt: String; Hours: Integer): String;
+Begin
+	Return ExprDt + " + interval '" + Hours.ToString + " hours'";
+End Function UnvSqlAddHours;
+
+// --- Выражение SQL «время − N минут» (просроченные запуски, «зависшие» строки) ---
+Function UnvSqlSubMinutes(ExprDt: String; Minutes: Integer): String;
+Begin
+	Return ExprDt + " - interval '" + Minutes.ToString + " minutes'";
+End Function UnvSqlSubMinutes;
+
+// --- Есть ли колонка в таблице (проверка «версии» схемы без метаданных) ---
+Function UnavailColumnExists(Connect: ISecurityConnection; TableName: String; ColumnName: String): Boolean;
+Var
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Res: Boolean;
+Begin
+	Res := False;
+	Try
+		Command := Connect.CreateCommand("select " + ColumnName + " from " + TableName + " where 1 = 0");
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		Cursor.Close;
+		Command.Close;
+		Res := True;
+	Except On e: Exception Do
+		Res := False;
+	End Try;
+	Return Res;
+End Function UnavailColumnExists;
+
+// --- Записать событие в журнал действий (журнал не критичен: ошибки глотаем) ---
+Function WriteUnavailLog(Key: Integer; EventName: String; Details: String): Boolean;
+Var
+	Sql, KeySql: String;
+Begin
+	KeySql := "null";
+	If Key <> 0 Then
+		KeySql := Key.ToString;
+	End If;
+	Sql := "insert into " + UNV_LOG_TABLE + " (" + LOG_F_AT + ", " + LOG_F_AUTHOR + ", "
+		+ LOG_F_KEY + ", " + LOG_F_EVENT + ", " + LOG_F_DETAILS + ") values ("
+		+ UnvSqlDate(GetServerStamp) + ", " + UnvSqlStr(GetCurrentAuthor) + ", "
+		+ KeySql + ", " + UnvSqlStr(EventName) + ", " + UnvSqlStr(Details) + ")";
+	Return ExecUnavailSql(Sql) >= 0;
+End Function WriteUnavailLog;
+
+// --- Прочитать журнал действий (последние MaxRows; Key = 0 — по всем записям) ---
+Function LoadUnavailLog(Key: Integer; MaxRows: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	Row: CUnavailLogRow;
+	Sql, WhereSql: String;
+Begin
+	Rows := New ArrayList.Create;
+	WhereSql := "";
+	If Key <> 0 Then
+		WhereSql := " where " + LOG_F_KEY + " = " + Key.ToString;
+	End If;
+	Sql := "select " + LOG_F_ID + ", " + LOG_F_AT + ", " + LOG_F_AUTHOR + ", coalesce(" + LOG_F_KEY + ", 0), "
+		+ LOG_F_EVENT + ", " + LOG_F_DETAILS + " from " + UNV_LOG_TABLE + WhereSql
+		+ " order by " + LOG_F_ID + " desc";
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While (Not Cursor.Eof) And (Rows.Count < MaxRows) Do
+			Row := New CUnavailLogRow.Create;
+			Row.LogId := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Row.At := UnvVarToDate(Cursor.Fields.Item(1).Value);
+			Row.Author := UnvVarToStr(Cursor.Fields.Item(2).Value);
+			Row.Key := UnvVarToInt(Cursor.Fields.Item(3).Value);
+			Row.Event_ := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Row.Details := UnvVarToStr(Cursor.Fields.Item(5).Value);
+			Rows.Add(Row);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение журнала — " + e.Message);
+		Rows.Clear;
+	End Try;
+	Return Rows;
+End Function LoadUnavailLog;
+
+// --- Журнал действий текстом (для Memo на форме) ---
+Function UnavailLogText(Key: Integer; MaxRows: Integer): String;
+Var
+	Rows: ArrayList;
+	Row: CUnavailLogRow;
+	S: String;
+	I: Integer;
+Begin
+	S := "";
+	Rows := LoadUnavailLog(Key, MaxRows);
+	For I := 0 To Rows.Count - 1 Do
+		Row := Rows.Item(I) As CUnavailLogRow;
+		S := S + Row.At.ToString + " | " + Row.Author + " | " + Row.Event_ + " | " + Row.Details + UNV_CRLF;
+	End For;
+	If S = "" Then
+		S := "Журнал пуст (или таблица " + UNV_LOG_TABLE + " недоступна).";
+	End If;
+	Return S;
+End Function UnavailLogText;
+
+// --- Записать попытку выполнения разового запуска в журнал (UNAVAILABILITY_RUN_LOG) ---
+// Вызывает диспетчер (UnavailabilityRunner.fore) после каждой попытки:
+//   RUN_STATE_DONE    — задача выполнена;   RUN_STATE_FAILED — ошибка (или причина пропуска);
+//   RUN_STATE_SKIPPED — задача уже выполняется (попытка пропущена);
+//   RUN_STATE_DRY_RUN — сухой прогон (задача не запускалась).
+// Key = 0 — запись недоступности неизвестна. False — журнал недоступен (пишем в Debug).
+Function WriteRunLog(Key: Integer; TaskId: String; TaskName: String; PlannedAt: DateTime;
+	StartedAt: DateTime; FinishedAt: DateTime; State: String; Attempt: Integer;
+	DurationSec: Integer; ErrorText: String; DryRun: Boolean): Boolean;
+Var
+	Sql, KeySql, DrySql: String;
+Begin
+	KeySql := "null";
+	If Key <> 0 Then
+		KeySql := Key.ToString;
+	End If;
+	DrySql := "false";
+	If DryRun Then
+		DrySql := "true";
+	End If;
+	Sql := "insert into " + UNV_RUN_LOG_TABLE + " (" + RL_F_AT + ", " + RL_F_KEY + ", "
+		+ RL_F_TASK_ID + ", " + RL_F_TASK_NAME + ", " + RL_F_PLANNED + ", " + RL_F_STARTED + ", "
+		+ RL_F_FINISHED + ", " + RL_F_STATE + ", " + RL_F_ATTEMPT + ", " + RL_F_DURATION + ", "
+		+ RL_F_ERROR + ", " + RL_F_AUTHOR + ", " + RL_F_DRY + ") values ("
+		+ UnvSqlDate(GetServerStamp) + ", " + KeySql + ", " + UnvSqlStr(UnvStrCut(TaskId, 250)) + ", "
+		+ UnvSqlStr(UnvStrCut(TaskName, 250)) + ", " + UnvSqlDate(PlannedAt) + ", "
+		+ UnvSqlDate(StartedAt) + ", " + UnvSqlDate(FinishedAt) + ", "
+		+ UnvSqlStr(UnvStrCut(State, 15)) + ", " + Attempt.ToString + ", " + DurationSec.ToString + ", "
+		+ UnvSqlStr(UnvStrCut(ErrorText, 990)) + ", " + UnvSqlStr(UnvStrCut(GetCurrentAuthor, 250))
+		+ ", " + DrySql + ")";
+	Return ExecUnavailSql(Sql) >= 0;
+End Function WriteRunLog;
+
+// --- Читать журнал выполненных запусков (последние MaxRows; Key = 0 — по всем записям) ---
+Function LoadRunLog(Key: Integer; MaxRows: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	Row: CUnavailRunLogRow;
+	Sql, WhereSql: String;
+Begin
+	Rows := New ArrayList.Create;
+	WhereSql := "";
+	If Key <> 0 Then
+		WhereSql := " where " + RL_F_KEY + " = " + Key.ToString;
+	End If;
+	Sql := "select " + RL_F_ID + ", " + RL_F_AT + ", coalesce(" + RL_F_KEY + ", 0), " + RL_F_TASK_ID
+		+ ", " + RL_F_TASK_NAME + ", " + RL_F_PLANNED + ", " + RL_F_STARTED + ", " + RL_F_FINISHED
+		+ ", " + RL_F_STATE + ", coalesce(" + RL_F_ATTEMPT + ", 0), coalesce(" + RL_F_DURATION + ", 0), "
+		+ RL_F_ERROR + ", " + RL_F_AUTHOR + " from " + UNV_RUN_LOG_TABLE + WhereSql
+		+ " order by " + RL_F_ID + " desc";
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While (Not Cursor.Eof) And (Rows.Count < MaxRows) Do
+			Row := New CUnavailRunLogRow.Create;
+			Row.LogId := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Row.At := UnvVarToDate(Cursor.Fields.Item(1).Value);
+			Row.Key := UnvVarToInt(Cursor.Fields.Item(2).Value);
+			Row.TaskId := UnvVarToStr(Cursor.Fields.Item(3).Value);
+			Row.TaskName := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Row.PlannedAt := UnvVarToDate(Cursor.Fields.Item(5).Value);
+			Row.StartedAt := UnvVarToDate(Cursor.Fields.Item(6).Value);
+			Row.FinishedAt := UnvVarToDate(Cursor.Fields.Item(7).Value);
+			Row.State := UnvVarToStr(Cursor.Fields.Item(8).Value);
+			Row.Attempt := UnvVarToInt(Cursor.Fields.Item(9).Value);
+			Row.DurationSec := UnvVarToInt(Cursor.Fields.Item(10).Value);
+			Row.ErrorText := UnvVarToStr(Cursor.Fields.Item(11).Value);
+			Row.Author := UnvVarToStr(Cursor.Fields.Item(12).Value);
+			Row.DryRun := Row.State = RUN_STATE_DRY_RUN;
+			Rows.Add(Row);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение журнала запусков — " + e.Message);
+		Rows.Clear;
+	End Try;
+	Return Rows;
+End Function LoadRunLog;
+
+// --- Состояние записи журнала запусков текстом (для формы) ---
+Function RunLogStateText(State: String): String;
+Begin
+	If State = RUN_STATE_DONE Then
+		Return "выполнено";
+	End If;
+	If State = RUN_STATE_FAILED Then
+		Return "ошибка";
+	End If;
+	If State = RUN_STATE_SKIPPED Then
+		Return "пропущено (задача занята)";
+	End If;
+	If State = RUN_STATE_DRY_RUN Then
+		Return "сухой прогон";
+	End If;
+	Return State;
+End Function RunLogStateText;
+
+// --- Журнал выполненных запусков текстом (для Memo на форме) ---
+Function RunLogText(Key: Integer; MaxRows: Integer): String;
+Var
+	Rows: ArrayList;
+	Row: CUnavailRunLogRow;
+	S: String;
+	I: Integer;
+Begin
+	S := "";
+	Rows := LoadRunLog(Key, MaxRows);
+	For I := 0 To Rows.Count - 1 Do
+		Row := Rows.Item(I) As CUnavailRunLogRow;
+		S := S + Row.At.ToString + " | " + RunLogStateText(Row.State) + " | " + Row.TaskId;
+		If Row.TaskName <> "" Then
+			S := S + " (" + Row.TaskName + ")";
+		End If;
+		S := S + " | план: " + Row.PlannedAt.ToString
+			+ " | попытка " + Row.Attempt.ToString
+			+ " | " + Row.DurationSec.ToString + " с"
+			+ " | " + Row.Author + UNV_CRLF;
+		If Row.ErrorText <> "" Then
+			S := S + "    " + Row.ErrorText + UNV_CRLF;
+		End If;
+	End For;
+	If S = "" Then
+		S := "Журнал выполненных запусков пуст (или таблица " + UNV_RUN_LOG_TABLE + " недоступна).";
+	End If;
+	Return S;
+End Function RunLogText;
+
+// --- Обрезать текст (для полей ERROR_TEXT/DETAILS с ограниченной длиной) ---
+Function UnvStrCut(S: String; MaxLen: Integer): String;
+Begin
+	If IsNull(S) Then
+		Return "";
+	End If;
+	If S.Length <= MaxLen Then
+		Return S;
+	End If;
+	Return S.SubString(0, MaxLen);
+End Function UnvStrCut;
+
+// --- Ключ запуска в журнале действий (Store.UnvRunKey) — оставлен для совместимости записей.
+
+// --- Состояние разового запуска в текст (для UI/журнала) ---
+Function UnavailRunStateText(State: String): String;
+Var
+	S: String;
+Begin
+	S := "ждёт";
+	If State = RUN_STATE_RUNNING Then
+		S := "в работе";
+	End If;
+	If State = RUN_STATE_DONE Then
+		S := "выполнено";
+	End If;
+	If State = RUN_STATE_FAILED Then
+		S := "ошибка";
+	End If;
+	Return S;
+End Function UnavailRunStateText;
+
+// --- Атомарный «захват» строки плана: True — именно этот вызов взял запуск в работу ---
+// Условия проверяет СУБД одной операцией update, поэтому два диспетчера (или два запуска
+// одной задачи) не выполнят строку дважды: захват удаётся только одному (affected rows = 1).
+Function ClaimPlanRun(Key: Integer; TaskId: String; NewStart: DateTime): Boolean;
+Var
+	Sql: String;
+	Cnt: Integer;
+Begin
+	If Key = 0 Then
+		Return False;
+	End If;
+	Sql := "update " + UNV_PLAN_TABLE + " set "
+		+ PLN_F_RUN_STATE + " = '" + RUN_STATE_RUNNING + "', "
+		+ PLN_F_STARTED_AT + " = " + UnvSqlDate(GetServerStamp) + ", "
+		+ PLN_F_ATTEMPTS + " = coalesce(" + PLN_F_ATTEMPTS + ", 0) + 1"
+		+ " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " and " + PLN_F_TASK_ID + " = " + UnvSqlStr(TaskId)
+		+ " and " + PLN_F_NEW_START + " = " + UnvSqlDate(NewStart)
+		+ " and " + PLN_F_DONE_AT + " is null"
+		+ " and coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') <> '" + RUN_STATE_RUNNING + "'"
+		+ " and coalesce(" + PLN_F_ATTEMPTS + ", 0) < " + UNV_MAX_ATTEMPTS.ToString;
+	Cnt := ExecUnavailSql(Sql);
+	If Cnt = 1 Then
+		WriteUnavailLog(Key, LOG_EV_RUN_CLAIM, TaskId + " на " + NewStart.ToString);
+		Return True;
+	End If;
+	Return False;
+End Function ClaimPlanRun;
+
+// --- Завершить попытку. Ok=True → DONE + DONE_AT; Ok=False → FAILED + текст ошибки (повторы ограничены) ---
+Function FinishPlanRun(Key: Integer; TaskId: String; NewStart: DateTime; Ok: Boolean; ErrorText: String): Boolean;
+Var
+	Sql, SetSql: String;
+	Cnt: Integer;
+Begin
+	If Key = 0 Then
+		Return False;
+	End If;
+	If Ok Then
+		SetSql := PLN_F_RUN_STATE + " = '" + RUN_STATE_DONE + "', "
+			+ PLN_F_DONE_AT + " = " + UnvSqlDate(GetServerStamp) + ", "
+			+ PLN_F_FINISHED_AT + " = " + UnvSqlDate(GetServerStamp) + ", "
+			+ PLN_F_ERROR_TEXT + " = null";
+	Else
+		SetSql := PLN_F_RUN_STATE + " = '" + RUN_STATE_FAILED + "', "
+			+ PLN_F_FINISHED_AT + " = " + UnvSqlDate(GetServerStamp) + ", "
+			+ PLN_F_ERROR_TEXT + " = " + UnvSqlStr(UnvStrCut(ErrorText, 990));
+	End If;
+	Sql := "update " + UNV_PLAN_TABLE + " set " + SetSql
+		+ " where " + PLN_F_KEY + " = " + Key.ToString
+		+ " and " + PLN_F_TASK_ID + " = " + UnvSqlStr(TaskId)
+		+ " and " + PLN_F_NEW_START + " = " + UnvSqlDate(NewStart)
+		+ " and coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') = '" + RUN_STATE_RUNNING + "'";
+	Cnt := ExecUnavailSql(Sql);
+	If Cnt < 0 Then
+		Return False;
+	End If;
+	If Ok Then
+		WriteUnavailLog(Key, LOG_EV_RUN_DONE, TaskId + " на " + NewStart.ToString);
+	Else
+		WriteUnavailLog(Key, LOG_EV_RUN_FAIL, TaskId + " на " + NewStart.ToString + ": " + UnvStrCut(ErrorText, 500));
+	End If;
+	Return Cnt > 0;
+End Function FinishPlanRun;
+
+// --- Вернуть в очередь «зависшие» RUNNING (процесс диспетчера упал). Возврат: сколько вернули, -1 — ошибка ---
+Function ResetStuckPlanRuns(StuckMinutes: Integer): Integer;
+Var
+	Sql: String;
+	Cnt: Integer;
+Begin
+	Sql := "update " + UNV_PLAN_TABLE + " set " + PLN_F_RUN_STATE + " = '" + RUN_STATE_QUEUED + "'"
+		+ " where coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') = '" + RUN_STATE_RUNNING + "'"
+		+ " and " + PLN_F_DONE_AT + " is null"
+		+ " and (" + PLN_F_STARTED_AT + " is null or "
+		+ PLN_F_STARTED_AT + " < " + UnvSqlSubMinutes("current_timestamp", StuckMinutes) + ")";
+	Cnt := ExecUnavailSql(Sql);
+	If Cnt < 0 Then
+		Return -1;
+	End If;
+	If Cnt > 0 Then
+		WriteUnavailLog(0, LOG_EV_RUN_RESET, "возвращено в очередь строк " + Cnt.ToString);
+	End If;
+	Return Cnt;
+End Function ResetStuckPlanRuns;
+
+// --- Строки плана, которые ПОРА запускать ---
+// Условия: новое время наступило, простой уже начался и ещё не истёк (+TailHours), строка не
+// выполнена, не в работе, число попыток не исчерпано. Сравнение времени делает СУБД
+// (current_timestamp) — часы сервера приложения, задачи и локаль на это не влияют.
+// ВНИМАНИЕ: при схеме с раздельными колонками даты/времени (UNV_PERIOD_SINGLE_COLUMN = False)
+// фильтр по окну недоступности не добавляется.
+Function LoadDueRunRows(TailHours: Integer; MaxRows: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Sql, WindowSql: String;
+Begin
+	Runs := New ArrayList.Create;
+	WindowSql := "";
+	If UNV_PERIOD_SINGLE_COLUMN Then
+		WindowSql := " and u." + UNV_F_START_DT + " <= current_timestamp"
+			+ " and current_timestamp <= " + UnvSqlAddHours("u." + UNV_F_END_DT, TailHours);
+	End If;
+	Sql := "select p." + PLN_F_KEY + ", p." + PLN_F_TASK_ID + ", p." + PLN_F_NEW_START
+		+ ", coalesce(p." + PLN_F_ATTEMPTS + ", 0), coalesce(p." + PLN_F_RUN_STATE + ", '"
+		+ RUN_STATE_QUEUED + "'), coalesce(p." + PLN_F_TASK_NAME + ", '')"
+		+ " from " + UNV_PLAN_TABLE + " p, " + UNV_TABLE + " u"
+		+ " where p." + PLN_F_KEY + " = u." + UNV_F_KEY
+		+ " and p." + PLN_F_NEW_START + " is not null"
+		+ " and p." + PLN_F_NEW_START + " <= current_timestamp"
+		+ " and p." + PLN_F_DONE_AT + " is null"
+		+ " and coalesce(p." + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') <> '" + RUN_STATE_DONE + "'"
+		+ " and coalesce(p." + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') <> '" + RUN_STATE_RUNNING + "'"
+		+ " and coalesce(p." + PLN_F_ATTEMPTS + ", 0) < " + UNV_MAX_ATTEMPTS.ToString
+		+ WindowSql
+		+ " order by p." + PLN_F_NEW_START;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While (Not Cursor.Eof) And (Runs.Count < MaxRows) Do
+			Run := New CUnavailStoredRun.Create;
+			Run.Key := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Run.TaskId := UnvVarToStr(Cursor.Fields.Item(1).Value);
+			Run.HasNewStart := True;
+			Run.NewStart := UnvVarToDate(Cursor.Fields.Item(2).Value);
+			Run.Attempts := UnvVarToInt(Cursor.Fields.Item(3).Value);
+			Run.RunState := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Run.TaskName := UnvVarToStr(Cursor.Fields.Item(5).Value);
+			Runs.Add(Run);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение строк к запуску — " + e.Message);
+		Runs.Clear;
+	End Try;
+	Return Runs;
+End Function LoadDueRunRows;
+
+// --- Строки «требуют внимания»: попытки исчерпаны (FAILED) либо просрочены (время прошло, не выполнено) ---
+Function LoadAttentionRunRows(OverdueHours: Integer; MaxRows: Integer): ArrayList;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Sql, OverdueSql: String;
+Begin
+	Runs := New ArrayList.Create;
+	OverdueSql := "(" + PLN_F_NEW_START + " is not null and " + PLN_F_DONE_AT + " is null and "
+		+ PLN_F_NEW_START + " < " + UnvSqlSubMinutes("current_timestamp", OverdueHours * 60) + ")";
+	Sql := "select " + PLN_F_KEY + ", " + PLN_F_TASK_ID + ", " + PLN_F_NEW_START
+		+ ", coalesce(" + PLN_F_ATTEMPTS + ", 0), coalesce(" + PLN_F_RUN_STATE + ", '"
+		+ RUN_STATE_QUEUED + "'), coalesce(" + PLN_F_ERROR_TEXT + ", '')"
+		+ " from " + UNV_PLAN_TABLE
+		+ " where " + PLN_F_DONE_AT + " is null"
+		+ " and (coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED + "') = '" + RUN_STATE_FAILED + "'"
+		+ " or " + OverdueSql + ")"
+		+ " order by " + PLN_F_NEW_START;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand(Sql);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While (Not Cursor.Eof) And (Runs.Count < MaxRows) Do
+			Run := New CUnavailStoredRun.Create;
+			Run.Key := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Run.TaskId := UnvVarToStr(Cursor.Fields.Item(1).Value);
+			Run.HasNewStart := UnvVarToStr(Cursor.Fields.Item(2).Value) <> "";
+			Run.NewStart := UnvVarToDate(Cursor.Fields.Item(2).Value);
+			Run.Attempts := UnvVarToInt(Cursor.Fields.Item(3).Value);
+			Run.RunState := UnvVarToStr(Cursor.Fields.Item(4).Value);
+			Run.ErrorText := UnvVarToStr(Cursor.Fields.Item(5).Value);
+			Runs.Add(Run);
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: чтение проблемных строк — " + e.Message);
+		Runs.Clear;
+	End Try;
+	Return Runs;
+End Function LoadAttentionRunRows;
+
+// --- Сводка по состояниям строк плана записи (для формы и журнала) ---
+Function PlanRunsSummaryText(Key: Integer): String;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	S, State: String;
+	Total, Queued, Running, Done, Failed, Attn, Cnt: Integer;
+Begin
+	If Key = 0 Then
+		Return "Запись недоступности не выбрана.";
+	End If;
+	Total := 0;
+	Queued := 0;
+	Running := 0;
+	Done := 0;
+	Failed := 0;
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand("select coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED
+			+ "'), count(*) from " + UNV_PLAN_TABLE + " where " + PLN_F_KEY + " = " + Key.ToString
+			+ " group by 1");
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			State := UnvVarToStr(Cursor.Fields.Item(0).Value);
+			Cnt := UnvVarToInt(Cursor.Fields.Item(1).Value);
+			Total := Total + Cnt;
+			If State = RUN_STATE_QUEUED Then
+				Queued := Queued + Cnt;
+			End If;
+			If State = RUN_STATE_RUNNING Then
+				Running := Running + Cnt;
+			End If;
+			If State = RUN_STATE_DONE Then
+				Done := Done + Cnt;
+			End If;
+			If State = RUN_STATE_FAILED Then
+				Failed := Failed + Cnt;
+			End If;
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Debug.WriteLine("Недоступность: сводка плана — " + e.Message);
+		Return "Не удалось прочитать состояния плана: проверьте колонки RUN_STATE/ATTEMPTS.";
+	End Try;
+	Rows := LoadAttentionRunRows(24, 500);
+	Attn := Rows.Count;
+	S := "Строк плана: " + Total.ToString + " — ждёт " + Queued.ToString + ", в работе " + Running.ToString
+		+ ", выполнено " + Done.ToString + ", ошибок " + Failed.ToString
+		+ ", требует внимания " + Attn.ToString + ".";
+	If IsPlanStale(Key) Then
+		S := S + UNV_CRLF + "⚠ Запись недоступности изменялась после сохранения плана —"
+			+ " пересоберите план и сохраните заново.";
+	End If;
+	Return S;
+End Function PlanRunsSummaryText;
+
+// --- Применить сохранённый план и вернуть ПОДРОБНЫЙ отчёт (применено / не найдено) ---
+Function ApplyStoredPlanReport(Key: Integer; Impacts: ArrayList): String;
+Var
+	Runs: ArrayList;
+	Run: CUnavailStoredRun;
+	Impact: CUnavailImpact;
+	Applied, Missed, S: String;
+	I, J, Cnt: Integer;
+	Found: Boolean;
+Begin
+	S := "";
+	Applied := "";
+	Missed := "";
+	Cnt := 0;
+	If Key = 0 Then
+		Return "Запись недоступности не выбрана.";
+	End If;
+	If IsNull(Impacts) Then
+		Return "Сначала постройте список затронутых задач.";
+	End If;
+	Runs := LoadPlanFromTable(Key);
+	For I := 0 To Runs.Count - 1 Do
+		Run := Runs.Item(I) As CUnavailStoredRun;
+		Found := False;
+		For J := 0 To Impacts.Count - 1 Do
+			Impact := Impacts.Item(J) As CUnavailImpact;
+			If (Not Found) And (Impact.Id = Run.TaskId) Then
+				Found := True;
+				If Run.HasNewStart Then
+					Impact.Decision := UNV_DECISION_RESCHEDULE;
+					Impact.NewStart := Run.NewStart;
+					Applied := Applied + UNV_CRLF + "  " + Run.TaskId
+						+ " → перепланировать на " + Run.NewStart.ToString;
+				Else
+					Impact.Decision := UNV_DECISION_SKIP;
+					Applied := Applied + UNV_CRLF + "  " + Run.TaskId + " → не запускать";
+				End If;
+				Cnt := Cnt + 1;
+			End If;
+		End For;
+		If Not Found Then
+			Missed := Missed + UNV_CRLF + "  " + Run.TaskId;
+		End If;
+	End For;
+	S := "Из таблицы применено строк: " + Cnt.ToString + " из " + Runs.Count.ToString + ".";
+	If Applied <> "" Then
+		S := S + UNV_CRLF + "Что применено:" + Applied;
+	End If;
+	If Missed <> "" Then
+		S := S + UNV_CRLF + "Не найдено в текущем плане (задача удалена/переименована):" + Missed;
+	End If;
+	Return S;
+End Function ApplyStoredPlanReport;
+
+// --- Монитор недоступности: сводка по всей системе (все записи, все планы, проблемные строки) ---
+Function UnavailMonitorText: String;
+Var
+	Db: IDatabaseInstance;
+	Connect: ISecurityConnection;
+	Command: IDalCommand;
+	Cursor: IDalCursor;
+	Rows: ArrayList;
+	State, States: String;
+	Records, Active, PlanRows, Attn, Cnt: Integer;
+Begin
+	Records := 0;
+	Active := 0;
+	PlanRows := 0;
+	States := "";
+	Try
+		Db := GetUnavailDb;
+		Connect := Db.Connection;
+		Command := Connect.CreateCommand("select count(*), sum(case when " + UNV_F_START_DT
+			+ " <= current_timestamp and current_timestamp <= " + UNV_F_END_DT
+			+ " then 1 else 0 end) from " + UNV_TABLE);
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		If Not Cursor.Eof Then
+			Records := UnvVarToInt(Cursor.Fields.Item(0).Value);
+			Active := UnvVarToInt(Cursor.Fields.Item(1).Value);
+		End If;
+		Cursor.Close;
+		Command.Close;
+		Command := Connect.CreateCommand("select coalesce(" + PLN_F_RUN_STATE + ", '" + RUN_STATE_QUEUED
+			+ "'), count(*) from " + UNV_PLAN_TABLE + " group by 1");
+		Command.Parse;
+		Cursor := Command.CreateCursor;
+		While Not Cursor.Eof Do
+			State := UnvVarToStr(Cursor.Fields.Item(0).Value);
+			Cnt := UnvVarToInt(Cursor.Fields.Item(1).Value);
+			PlanRows := PlanRows + Cnt;
+			If State = RUN_STATE_QUEUED Then
+				States := States + "ждёт " + Cnt.ToString + ", ";
+			End If;
+			If State = RUN_STATE_RUNNING Then
+				States := States + "в работе " + Cnt.ToString + ", ";
+			End If;
+			If State = RUN_STATE_DONE Then
+				States := States + "выполнено " + Cnt.ToString + ", ";
+			End If;
+			If State = RUN_STATE_FAILED Then
+				States := States + "ошибок " + Cnt.ToString + ", ";
+			End If;
+			Cursor.Next;
+		End While;
+		Cursor.Close;
+		Command.Close;
+	Except On e: Exception Do
+		Return "Не удалось прочитать сводку: " + e.Message;
+	End Try;
+	Rows := LoadAttentionRunRows(24, 500);
+	Attn := Rows.Count;
+	If States = "" Then
+		States := "строк плана нет";
+	End If;
+	Return "Записей о недоступности: " + Records.ToString + " (активны сейчас: " + Active.ToString + ")."
+		+ UNV_CRLF + "Строк плана: " + PlanRows.ToString + " — " + States
+		+ UNV_CRLF + "Требуют внимания (ошибки/просрочено): " + Attn.ToString + ".";
+End Function UnavailMonitorText;
+
+// --- Дополнительная строка монитора: идёт ли простой прямо сейчас ---
+Function UnavailMonitorActiveText: String;
+Var
+	S: String;
+Begin
+	S := UnavailMonitorText;
+	If S <> "" Then
+		S := S + UNV_CRLF + "Подсказка: «Что будет запущено» показывает ближайшие запуски диспетчера.";
+	End If;
+	Return S;
+End Function UnavailMonitorActiveText;

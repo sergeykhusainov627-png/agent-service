@@ -1,0 +1,786 @@
+// ID: TASKCONTAINERLIB  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Библиотека: работа с контейнером запланированных задач.
+// Наполнение формы «Планировщик» данными задач + текстовые представления полей.
+// Проект «Планировщик задач: равномерное распределение нагрузки».
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	// Автомасштаб компонентов при изменении размеров окна (см. SetAutoSize): True — включаем
+	// привязку краёв (IControl.Anchors) у тех контролов, которым это нужно; False — поведение прежнее.
+	// ⚠ По требованию стенда работаем ТОЛЬКО с пиксельными размерами (как было раньше): привязки
+	// отключены, поэтому SetAutoSize/AnchorGroup выставляют нулевые якоря и окно не «разъезжается».
+	UI_AUTOSIZE_ON_RESIZE = False;
+
+// --- Автомасштаб компонента при изменении размеров окна ---
+// IControl.Anchors: IAnchors — ПРОЦЕНТЫ привязки к краям родителя: Right/Bottom = 100 означает,
+// что правый/нижний край «тянется» вместе с формой (компонент растягивается по ширине/высоте),
+// 0 — край привязан к левому/верхнему краю и не двигается. Значения задаются по осям по отдельности,
+// поэтому списку/таблице/Memo обычно нужно только право (StretchRight), а «нижнему» контролу
+// (Memo до конца окна, ряд кнопок) — ещё и низ (StretchBottom).
+Sub SetAutoSize(Ctl: IControl; StretchRight: Boolean; StretchBottom: Boolean);
+Begin
+	If IsNull(Ctl) Then
+		Return;                          // контрола нет (например, удалён из описания экрана)
+	End If;
+	If IsNull(Ctl) Then
+		Return;
+	End If;
+	If Not UI_AUTOSIZE_ON_RESIZE Then
+		Ctl.Anchors.Left := 0;
+		Ctl.Anchors.Top := 0;
+		Ctl.Anchors.Right := 0;
+		Ctl.Anchors.Bottom := 0;
+		Return;
+	End If;
+	Try
+		Ctl.Anchors.Left := 0;                    // левый/верхний край — на месте
+		Ctl.Anchors.Top := 0;
+		If StretchRight Then
+			Ctl.Anchors.Right := 100;             // правый край тянется вместе с окном
+		End If;
+		If StretchBottom Then
+			Ctl.Anchors.Bottom := 100;            // нижний край тянется вместе с окном
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Автомасштаб контрола — " + e.Message);
+	End Try;
+End Sub SetAutoSize;
+
+// --- Состояние задачи (ScheduledTaskState) в текст ---
+Function GetTaskStateText(State: ScheduledTaskState): String;
+Begin
+	If State = ScheduledTaskState.Inactive Then
+		Return "Неактивна";
+	End If;
+	If State = ScheduledTaskState.Ready Then
+		Return "Готова";
+	End If;
+	If State = ScheduledTaskState.Executing Then
+		Return "Выполняется";
+	End If;
+	If State = ScheduledTaskState.Succeeded Then
+		Return "Завершена";
+	End If;
+	If State = ScheduledTaskState.Failed Then
+		Return "Ошибка";
+	End If;
+	Return "Неизвестно";
+End Function GetTaskStateText;
+
+// --- Расписание задачи (период) в текст ---
+// Текст собирается БЕЗ приведения к подтипам периода (IScheduledTaskPeriodDaily и т.п.): берём
+// только свойства базового интерфейса (Type, Next). Приведение к подтипу на стенде может не сработать,
+// а исключение из обработчика события закрывает модальную форму — поэтому параметры подтипов
+// показываем только внутри Try, а «ближайший запуск» считает базовый метод Next.
+Function GetTaskPeriodText(Props: IScheduledTaskProperties): String;
+Var
+	Period: IScheduledTaskPeriod;
+	NextRun: DateTime;
+	KindText: String;
+Begin
+	If IsNull(Props) Then
+		Return "—";
+	End If;
+	Period := Null;
+	Try
+		Period := Props.Period;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: расписание недоступно — " + e.Message);
+	End Try;
+	If IsNull(Period) Then
+		Return "период не задан";
+	End If;
+
+	KindText := "";
+	Try
+		If Period.Type = ScheduledTaskPeriodType.Daily Then
+			KindText := "ежедневно";
+		End If;
+		If Period.Type = ScheduledTaskPeriodType.Weekly Then
+			KindText := "еженедельно";
+		End If;
+		If Period.Type = ScheduledTaskPeriodType.Monthly Then
+			KindText := "ежемесячно";
+		End If;
+		If Period.Type = ScheduledTaskPeriodType.Timely Then
+			KindText := "с интервалом";
+		End If;
+		If Period.Type = ScheduledTaskPeriodType.OneTimeOnly Then
+			KindText := "однократно";
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: тип расписания недоступен — " + e.Message);
+		KindText := "";
+	End Try;
+	If KindText = "" Then
+		KindText := "период";
+	End If;
+
+	NextRun := DateTime.MinValue;
+	Try
+		NextRun := Period.Next(DateTime.Now);
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: ближайший запуск не рассчитался — " + e.Message);
+		NextRun := DateTime.MinValue;
+	End Try;
+	If NextRun = DateTime.MinValue Then
+		Return KindText + " (ближайший запуск не определён)";
+	End If;
+	Return KindText + ", ближайший запуск " + NextRun.ToString;
+End Function GetTaskPeriodText;
+
+// --- Задачи контейнера (описания объектов) ---
+Function GetContainerTasks(Container: IMetabaseObjectDescriptor): IMetabaseObjectDescriptors;
+Begin
+	Return (Container.Bind As IScheduledTasksContainer).Tasks;
+End Function GetContainerTasks;
+
+// ===========================================================================
+// НЕСКОЛЬКО КОНТЕЙНЕРОВ ЗАДАЧ (MultiSelect в диалоге выбора объекта)
+// Контейнеры ходят СПИСКОМ (ArrayList дескрипторов) из формы в анализ, план переноса,
+// применение плана и диспетчер. Задача, попавшая в два контейнера (одинаковый Id),
+// берётся ОДИН раз — иначе в плане и отчётах появились бы дубли строк.
+// ===========================================================================
+
+// --- Подпись списка контейнеров: «A; B; C» (EditBox формы / сообщения) ---
+Function ContainersText(Containers: ArrayList): String;
+Var
+	Cont: IMetabaseObjectDescriptor;
+	S: String;
+	I: Integer;
+Begin
+	S := "";
+	If IsNull(Containers) Then
+		Return S;
+	End If;
+	For I := 0 To Containers.Count - 1 Do
+		Cont := Containers.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			If S <> "" Then
+				S := S + "; ";
+			End If;
+			S := S + Cont.Id;
+		End If;
+	End For;
+	Return S;
+End Function ContainersText;
+
+// --- Идентификаторы списка одной строкой «A;B;C» (передача в другое окно командой) ---
+Function ContainersIdsText(Containers: ArrayList): String;
+Var
+	Cont: IMetabaseObjectDescriptor;
+	S: String;
+	I: Integer;
+Begin
+	S := "";
+	If IsNull(Containers) Then
+		Return S;
+	End If;
+	For I := 0 To Containers.Count - 1 Do
+		Cont := Containers.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			If S <> "" Then
+				S := S + ";";
+			End If;
+			S := S + Cont.Id;
+		End If;
+	End For;
+	Return S;
+End Function ContainersIdsText;
+
+// --- Разобрать «A;B;C» в список дескрипторов контейнеров (окно анализа раскладки) ---
+// Разделитель — точка с запятой (как в ContainersIdsText). Несуществующий Id / ошибка
+// открытия — строка пропускается, причина пишется в Debug (окно не должно падать).
+Function ContainersFromIds(Ids: String): ArrayList;
+Var
+	Containers: ArrayList;
+	Rest, Id, Sep: String;
+	Cont: IMetabaseObjectDescriptor;
+	P: Integer;
+Begin
+	Containers := New ArrayList.Create;
+	Rest := String.Trim(Ids);
+	Sep := ";";
+	While Rest <> "" Do
+		P := Rest.IndexOf(Sep);
+		If P < 0 Then
+			Id := String.Trim(Rest);
+			Rest := "";
+		Else
+			Id := String.Trim(Rest.SubString(0, P));
+			Rest := String.Trim(Rest.SubString(P + Sep.Length, Rest.Length - P - Sep.Length));
+		End If;
+		If Id <> "" Then
+			Cont := Null;
+			Try
+				Cont := MetabaseClass.Active.ItemById(Id);
+			Except On e: Exception Do
+				Debug.WriteLine("Контейнер «" + Id + "» по Id не открылся — " + e.Message);
+				Cont := Null;
+			End Try;
+			If Not IsNull(Cont) Then
+				Containers.Add(Cont);
+			End If;
+		End If;
+	End While;
+	Return Containers;
+End Function ContainersFromIds;
+
+// --- Сколько контейнеров в наборе (0 — набор пуст или не задан) ---
+Function ContainersCount(Containers: ArrayList): Integer;
+Begin
+	If IsNull(Containers) Then
+		Return 0;
+	End If;
+	Return Containers.Count;
+End Function ContainersCount;
+
+// --- Добавить контейнеры источника в набор (дубли по Id в верхнем регистре пропускаются) ---
+Sub AppendContainers(Merged: ArrayList; Seen: SortedList; Source: ArrayList);
+Var
+	Cont: IMetabaseObjectDescriptor;
+	I: Integer;
+Begin
+	If IsNull(Source) Then
+		Return;
+	End If;
+	For I := 0 To Source.Count - 1 Do
+		Cont := Source.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			If Seen.IndexOfKey(String.ToUpper(Cont.Id)) < 0 Then
+				Seen.Add(String.ToUpper(Cont.Id), Cont.Id);
+				Merged.Add(Cont);
+			End If;
+		End If;
+	End For;
+End Sub AppendContainers;
+
+// --- Объединить два набора контейнеров («Добавить контейнеры…»): Base + Add без дублей по Id ---
+// Нужно потому, что диалог репозитория с MultiSelect «теряет» выделение при переходе по папкам:
+// контейнеры из разных папок набираются за несколько заходов (каждый заход — добавление к набору).
+Function MergeContainers(Base: ArrayList; Add: ArrayList): ArrayList;
+Var
+	Merged: ArrayList;
+	Seen: SortedList;
+Begin
+	Merged := New ArrayList.Create;
+	Seen := New SortedList.Create;
+	AppendContainers(Merged, Seen, Base);
+	AppendContainers(Merged, Seen, Add);
+	Return Merged;
+End Function MergeContainers;
+
+// --- Строка «объединённого» списка задач: задача + контейнер, из которого она взята ---
+// Нужна форме «Планировщик»: MetabaseListView.Root принимает ТОЛЬКО ОДИН контейнер, поэтому список
+// задач по нескольким контейнерам форма заполняет сама (обычный ListView), а связь «строка ↔ задача»
+// держит в списке этих строк (TaskRows) — по индексу строки.
+Class CTaskRef: Object
+	Public Descriptor: IMetabaseObjectDescriptor;
+	Public TaskId: String;
+	Public Name: String;            // Name задачи (колонка «Название» объединённого списка)
+	Public ContainerId: String;
+	Public ContainerName: String;
+End Class CTaskRef;
+
+// --- Строки объединённого списка: задачи всех контейнеров без дублей (порядок = порядок контейнеров) ---
+Function CollectTaskRefs(Containers: ArrayList): ArrayList;
+Var
+	Refs: ArrayList;
+	Seen: SortedList;
+	Ref: CTaskRef;
+	Cont: IMetabaseObjectDescriptor;
+	TaskDesc: IMetabaseObjectDescriptor;
+	Ct: IMetabaseObjectDescriptors;
+	I, J: Integer;
+Begin
+	Refs := New ArrayList.Create;
+	Seen := New SortedList.Create;
+	If IsNull(Containers) Then
+		Return Refs;
+	End If;
+	For I := 0 To Containers.Count - 1 Do
+		Cont := Containers.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			Ct := Null;
+			Try
+				Ct := GetContainerTasks(Cont);
+			Except On e: Exception Do
+				Debug.WriteLine("Контейнер «" + Cont.Id + "»: задачи не прочитались — " + e.Message);
+				Ct := Null;
+			End Try;
+			If Not IsNull(Ct) Then
+				For J := 0 To Ct.Count - 1 Do
+					TaskDesc := Ct.Item(J) As IMetabaseObjectDescriptor;
+					If Not IsNull(TaskDesc) Then
+						If TaskDesc.Id <> "" Then
+							If Seen.IndexOfKey(String.ToUpper(TaskDesc.Id)) < 0 Then
+								Seen.Add(String.ToUpper(TaskDesc.Id), Cont.Id);
+								Ref := New CTaskRef.Create;
+								Ref.Descriptor := TaskDesc;
+								Ref.TaskId := TaskDesc.Id;
+								Ref.Name := TaskDesc.Name;
+								Ref.ContainerId := Cont.Id;
+								Ref.ContainerName := Cont.Name;
+								Refs.Add(Ref);
+							End If;
+						End If;
+					End If;
+				End For;
+			End If;
+		End If;
+	End For;
+	Return Refs;
+End Function CollectTaskRefs;
+
+// --- Задачи ВСЕХ контейнеров списка: ArrayList дескрипторов, без дублей по Id ---
+// Один «плохой» контейнер (нет прав, объект заблокирован) не срывает сбор из остальных.
+Function CollectTasksFromContainers(Containers: ArrayList): ArrayList;
+Var
+	Tasks: ArrayList;
+	Seen: SortedList;
+	Cont: IMetabaseObjectDescriptor;
+	TaskDesc: IMetabaseObjectDescriptor;
+	Ct: IMetabaseObjectDescriptors;
+	I, J: Integer;
+Begin
+	Tasks := New ArrayList.Create;
+	Seen := New SortedList.Create;
+	If IsNull(Containers) Then
+		Return Tasks;
+	End If;
+	For I := 0 To Containers.Count - 1 Do
+		Cont := Containers.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			Ct := Null;
+			Try
+				Ct := GetContainerTasks(Cont);
+			Except On e: Exception Do
+				Debug.WriteLine("Контейнер «" + Cont.Id + "»: задачи не прочитались — " + e.Message);
+				Ct := Null;
+			End Try;
+			If Not IsNull(Ct) Then
+				For J := 0 To Ct.Count - 1 Do
+					TaskDesc := Ct.Item(J) As IMetabaseObjectDescriptor;
+					If Not IsNull(TaskDesc) Then
+						If TaskDesc.Id <> "" Then
+							If Seen.IndexOfKey(String.ToUpper(TaskDesc.Id)) < 0 Then
+								Seen.Add(String.ToUpper(TaskDesc.Id), Cont.Id);
+								Tasks.Add(TaskDesc);
+							End If;
+						End If;
+					End If;
+				End For;
+			End If;
+		End If;
+	End For;
+	Return Tasks;
+End Function CollectTasksFromContainers;
+
+// --- Открыть задачу по описанию (Null — не удалось открыть; ошибка НЕ вылетает наружу) ---
+// Обработчики формы вызывают эту функцию из событий: необработанное исключение в событии модальной
+// формы прерывает модальный цикл, и окно закрывается (симптом «кликнул по задаче — форма исчезла»).
+Function BindScheduledTask(TaskDesc: IMetabaseObjectDescriptor): IScheduledTask;
+Var
+	Task: IScheduledTask;
+Begin
+	Task := Null;
+	If IsNull(TaskDesc) Then
+		Return Task;
+	End If;
+	Try
+		Task := TaskDesc.Bind As IScheduledTask;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: задача не открылась (Bind) — " + e.Message);
+		Task := Null;
+	End Try;
+	Return Task;
+End Function BindScheduledTask;
+
+// --- Последний успешный запуск (из истории задачи) ---
+Function GetLastSucceededText(Task: IScheduledTask): String;
+Var
+	Results: IScheduledTaskResults;
+	Res: IScheduledTaskResult;
+	Best: DateTime;
+	i: Integer;
+Begin
+	If IsNull(Task) Then
+		Return "—";
+	End If;
+	// История может быть недоступна (нет прав / нет записей): ошибка не должна вылетать из события формы
+	Results := Null;
+	Try
+		Results := Task.GetResults;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: история задачи недоступна — " + e.Message);
+	End Try;
+	If IsNull(Results) Then
+		Return "—";
+	End If;
+	Best := DateTime.MinValue;
+	Try
+		For i := 0 To Results.Count - 1 Do
+			Res := Results.Item(i);
+			If Res.Succeeded And (Res.StartDateTime > Best) Then
+				Best := Res.StartDateTime;
+			End If;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: разбор истории задачи — " + e.Message);
+		Best := DateTime.MinValue;
+	End Try;
+	If Best = DateTime.MinValue Then
+		Return "—";
+	End If;
+	Return Best.ToString;
+End Function GetLastSucceededText;
+
+// --- Средняя длительность выполнения (по истории задачи) ---
+Function GetAverageDurationText(Task: IScheduledTask): String;
+Var
+	Results: IScheduledTaskResults;
+	Res: IScheduledTaskResult;
+	Total: TimeSpan;
+	Cnt, i: Integer;
+Begin
+	If IsNull(Task) Then
+		Return "—";
+	End If;
+	Results := Null;
+	Try
+		Results := Task.GetResults;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: история задачи недоступна — " + e.Message);
+	End Try;
+	If IsNull(Results) Then
+		Return "—";
+	End If;
+	Total := TimeSpan.FromSeconds(0 As Double);
+	Cnt := 0;
+	Try
+		For i := 0 To Results.Count - 1 Do
+			Res := Results.Item(i);
+			If Res.Finished Then
+				Total := TimeSpan.Add(Total, DateTime.Difference(Res.StartDateTime, Res.FinishDateTime));
+				Cnt := Cnt + 1;
+			End If;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: средняя длительность недоступна — " + e.Message);
+		Cnt := 0;
+	End Try;
+	If Cnt = 0 Then
+		Return "—";
+	End If;
+	Return TimeSpan.FromSeconds(Total.TotalSeconds / (Cnt As Double)).ToString;
+End Function GetAverageDurationText;
+
+// ===========================================================================
+// СПИСОК РЕПОЗИТОРИЯ (MetabaseListView): выделенные и отмеченные объекты
+// ВАЖНО (проверено на стенде): привод «SelectedItem As IMetabaseListViewItem» НЕ работает.
+// Используются только документированные способы:
+//   SelectedObjects / CheckedObjects         — коллекции описаний объектов (без приводов);
+//   FindByDescriptor(Desc)                   — элемент списка по описанию (тип возврата IMetabaseListViewItem);
+//   Items(SelectedItem.Index).ColumnText(n)  — Id из колонки (как в рабочем коде проекта);
+//   IListViewItem.Checked                    — флаг строки (привод не нужен).
+// ===========================================================================
+
+// --- Описание объекта, выделенного в списке (Null — ничего не выбрано) ---
+Function SelectedObjectDescriptor(List: MetabaseListView): IMetabaseObjectDescriptor;
+Var
+	Descs: IMetabaseObjectDescriptors;
+	Desc: IMetabaseObjectDescriptor;
+Begin
+	Desc := Null;
+	If IsNull(List) Then
+		Return Desc;
+	End If;
+	Try
+		Descs := List.SelectedObjects;      // документированное свойство «выделенные объекты»
+		If (Not IsNull(Descs)) And (Descs.Count > 0) Then
+			Desc := Descs.Item(0) As IMetabaseObjectDescriptor;
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: SelectedObjects недоступно — " + e.Message);
+		Desc := Null;
+	End Try;
+	Return Desc;
+End Function SelectedObjectDescriptor;
+
+// --- Описание объекта выделенной строки: резервный способ — Id из колонки (IdColumn > 0) ---
+// IdColumn — номер колонки списка, в которой выводится Id объекта (в коде проекта — 1).
+Function SelectedObjectDescriptorByColumn(List: MetabaseListView; IdColumn: Integer): IMetabaseObjectDescriptor;
+Var
+	Desc: IMetabaseObjectDescriptor;
+	Row: IListViewItem;
+	Id: String;
+Begin
+	Desc := Null;
+	If IsNull(List) Or (IdColumn <= 0) Then
+		Return Desc;
+	End If;
+	Try
+		If Not IsNull(List.SelectedItem) Then
+			Row := List.Items.Item(List.SelectedItem.Index);
+			Id := Row.ColumnText(IdColumn);
+			If Id <> "" Then
+				Desc := MetabaseClass.Active.ItemById(Id);
+			End If;
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: Id из колонки " + IdColumn.ToString + " недоступен — " + e.Message);
+		Desc := Null;
+	End Try;
+	Return Desc;
+End Function SelectedObjectDescriptorByColumn;
+
+// --- Id выделенного объекта (пусто — ничего не выбрано) ---
+Function SelectedObjectId(List: MetabaseListView): String;
+Var
+	Desc: IMetabaseObjectDescriptor;
+Begin
+	Desc := SelectedObjectDescriptor(List);
+	If IsNull(Desc) Then
+		Return "";
+	End If;
+	Return Desc.Id;
+End Function SelectedObjectId;
+
+// --- Описания объектов, отмеченных флажками (документированное CheckedObjects) ---
+Function CheckedObjectDescriptors(List: MetabaseListView): IMetabaseObjectDescriptors;
+Var
+	Descs: IMetabaseObjectDescriptors;
+Begin
+	Descs := Null;
+	If IsNull(List) Then
+		Return Descs;
+	End If;
+	Try
+		Descs := List.CheckedObjects;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: CheckedObjects недоступно — " + e.Message);
+		Descs := Null;
+	End Try;
+	Return Descs;
+End Function CheckedObjectDescriptors;
+
+// --- Id объектов, отмеченных флажками (ArrayList строк) ---
+Function CheckedObjectIds(List: MetabaseListView): ArrayList;
+Var
+	Ids: ArrayList;
+	Descs: IMetabaseObjectDescriptors;
+	I: Integer;
+Begin
+	Ids := New ArrayList.Create;
+	Descs := CheckedObjectDescriptors(List);
+	If IsNull(Descs) Then
+		Return Ids;
+	End If;
+	For I := 0 To Descs.Count - 1 Do
+		Ids.Add((Descs.Item(I) As IMetabaseObjectDescriptor).Id);
+	End For;
+	Return Ids;
+End Function CheckedObjectIds;
+
+// --- Отметить/снять флажки у всех строк списка. Возврат: сколько строк затронуто (-1 — не удалось) ---
+// Метка строки (Checked) объявлена у IListViewItem — привод к IMetabaseListViewItem НЕ нужен.
+Function SetAllRowsChecked(List: MetabaseListView; Value: Boolean): Integer;
+Var
+	Items: IListViewItems;
+	Item: IListViewItem;
+	Cnt, I: Integer;
+Begin
+	Cnt := -1;
+	If IsNull(List) Then
+		Return Cnt;
+	End If;
+	Try
+		Cnt := 0;
+		Items := List.Items;
+		For I := 0 To Items.Count - 1 Do
+			Item := Items.Item(I);
+			Item.Checked := Value;
+			Cnt := Cnt + 1;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Контейнер: флажки списка недоступны — " + e.Message);
+		Cnt := -1;
+	End Try;
+	Return Cnt;
+End Function SetAllRowsChecked;
+
+// --- Отметить флажками строки перечисленных объектов (остальные — снять).
+//     Элемент ищется документированным FindByDescriptor (тип возврата — IMetabaseListViewItem).
+//     Возврат: сколько строк отмечено (-1 — не удалось) ---
+Function CheckRowsByDescriptors(List: MetabaseListView; Descs: IMetabaseObjectDescriptors): Integer;
+Var
+	Item: IMetabaseListViewItem;
+	Marked, I: Integer;
+Begin
+	If IsNull(List) Or IsNull(Descs) Then
+		Return -1;
+	End If;
+	If SetAllRowsChecked(List, False) < 0 Then
+		Return -1;                                  // нет доступа к строкам — сообщаем вызывающему
+	End If;
+	Marked := 0;
+	For I := 0 To Descs.Count - 1 Do
+		Try
+			Item := List.FindByDescriptor(Descs.Item(I));
+			If Not IsNull(Item) Then
+				Item.Checked := True;
+				Marked := Marked + 1;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Контейнер: FindByDescriptor — " + e.Message);
+		End Try;
+	End For;
+	Return Marked;
+End Function CheckRowsByDescriptors;
+
+// --- Отметить флажками строки по списку Id (остальные — снять). Возврат: сколько отмечено (-1 — ошибка) ---
+// Обратите внимание: коллекции описаний объектов создавать вручную не нужно — элемент берём
+// документированным FindByDescriptor(ItemById(id)).
+Function CheckRowsByIds(List: MetabaseListView; Ids: ArrayList): Integer;
+Var
+	Item: IMetabaseListViewItem;
+	Id: String;
+	Marked, I: Integer;
+Begin
+	If IsNull(List) Or IsNull(Ids) Then
+		Return -1;
+	End If;
+	If SetAllRowsChecked(List, False) < 0 Then
+		Return -1;                                  // нет доступа к строкам — сообщаем вызывающему
+	End If;
+	Marked := 0;
+	For I := 0 To Ids.Count - 1 Do
+		Id := Ids.Item(I) As String;
+		If Id <> "" Then
+			Try
+				Item := List.FindByDescriptor(MetabaseClass.Active.ItemById(Id));
+				If Not IsNull(Item) Then
+					Item.Checked := True;
+					Marked := Marked + 1;
+				End If;
+			Except On e: Exception Do
+				Debug.WriteLine("Контейнер: строка '" + Id + "' не отмечена — " + e.Message);
+			End Try;
+		End If;
+	End For;
+	Return Marked;
+End Function CheckRowsByIds;
+
+// ===========================================================================
+// КОЛОНКИ СПИСКОВ И ДЕРЕВА (сборка Forms): подписи и свойства столбцов
+// Из справки Forsight 10.9 (IListViewColumn / ITreeListColumn):
+//   Caption  — заголовок столбца;
+//   Width    — ширина в пикселях;
+//   Alignment: TextAlignment — выравнивание текста (0 Left / 1 Center / 2 Right);
+//   AutoSize: Boolean — «резиновая» ширина: столбец подстраивается под ширину компонента
+//             (несколько AutoSize-столбцов делят свободное место пропорционально; Width при
+//              AutoSize = True не используется);
+//   MinWidth/MaxWidth, Visible, SortAscending, ImageIndex, Index, Delete — остальные свойства.
+//   ВАЖНО (проверено на стенде): MinWidth у «резинового» столбца НЕ задаём — он ломает авторазмер.
+// Коллекции разные: у ListView/MetabaseListView — IListViewColumns (Add: IListViewColumn),
+// у TreeList/TreeCombo — ITreeListColumns (Add: ITreeListColumn), поэтому функций две.
+// ===========================================================================
+
+// Колонка списка: подпись + выравнивание + ширина; Stretch = True — тянуться по ширине списка
+Sub SetListColumn(Col: IListViewColumn; Caption: String; Width: Integer; Stretch: Boolean; Align: TextAlignment);
+Begin
+	Col.Caption := Caption;
+	Col.Alignment := Align;
+	// MinWidth для «резинового» столбца НЕ задаём: по справке AutoSize-столбцы делят свободное
+	// место пропорционально, а MinWidth этот расчёт ломает (столбец перестаёт тянуться).
+	// Col.MinWidth := 48;
+	Col.AutoSize := Stretch;
+	If Not Stretch Then
+		Col.Width := Width;             // при AutoSize = True ширина считается автоматически
+	End If;
+End Sub SetListColumn;
+
+// Колонка дерева (TreeList/TreeCombo) — та же настройка, но коллекция ITreeListColumns
+Sub SetTreeColumn(Col: ITreeListColumn; Caption: String; Width: Integer; Stretch: Boolean; Align: TextAlignment);
+Begin
+	Col.Caption := Caption;
+	Col.Alignment := Align;
+	// MinWidth не задаём — он ломает авторазмер (см. SetListColumn)
+	// Col.MinWidth := 48;
+	Col.AutoSize := Stretch;
+	If Not Stretch Then
+		Col.Width := Width;
+	End If;
+End Sub SetTreeColumn;
+
+// Колонки списка уже заданы (например, в Инспекторе): включаем «резиновость» у последней
+// (она забирает свободное место) — вид одинаков независимо от того, создал колонки код или дизайнер.
+// MinWidth НЕ задаём: он ломает авторазмер (см. SetListColumn).
+Sub SetColumnsAutoSize(Cols: IListViewColumns);
+Var
+	Col: IListViewColumn;
+	I: Integer;
+Begin
+	Try
+		If Not IsNull(Cols) Then
+			For I := 0 To Cols.Count - 1 Do
+				Col := Cols.Item(I);
+				// Col.MinWidth := 48;
+				Col.AutoSize := (I = Cols.Count - 1);
+			End For;
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Списки: автоподбор ширины колонок — " + e.Message);
+	End Try;
+End Sub SetColumnsAutoSize;
+
+// То же для колонок дерева (ITreeListColumns); MinWidth не задаём (см. выше)
+Sub SetTreeColumnsAutoSize(Cols: ITreeListColumns);
+Var
+	Col: ITreeListColumn;
+	I: Integer;
+Begin
+	Try
+		If Not IsNull(Cols) Then
+			For I := 0 To Cols.Count - 1 Do
+				Col := Cols.Item(I);
+				// Col.MinWidth := 48;
+				Col.AutoSize := (I = Cols.Count - 1);
+			End For;
+		End If;
+	Except On e: Exception Do
+		Debug.WriteLine("Списки: автоподбор ширины колонок дерева — " + e.Message);
+	End Try;
+End Sub SetTreeColumnsAutoSize;
+
+// --- Заполнить Memo многострочным текстом (ОБЩИЙ помощник: доступен всем формам и модулям) ---
+// Строки разделяются #13#10 — так собираются тексты проекта (PlanText, отчёты, журнал, письма).
+// Вызов: SetMemoLines(SomeMemo, Text) — прежнее содержимое очищается.
+// Функция живёт в общей библиотеке (а не в модуле формы), поэтому её используют и другие формы —
+// например PlanTextForm.fore. У формы «Планировщик» в «Ссылках сборок» этот модуль подключён.
+Sub SetMemoLines(MemoCtl: Memo; S: String);
+Var
+	P: Integer;
+	Rest: String;
+Begin
+	If IsNull(MemoCtl) Then
+		Return;
+	End If;
+	Try
+		MemoCtl.Lines.Clear;
+		Rest := S;
+		While Rest <> "" Do
+			P := Rest.IndexOf(#13 + #10);
+			If P < 0 Then
+				MemoCtl.Lines.Add(Rest);
+				Rest := "";
+			Else
+				MemoCtl.Lines.Add(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + 2, Rest.Length - P - 2);
+			End If;
+		End While;
+	Except On e: Exception Do
+		Debug.WriteLine("SetMemoLines: не удалось заполнить Memo — " + e.Message);
+	End Try;
+End Sub SetMemoLines;
+

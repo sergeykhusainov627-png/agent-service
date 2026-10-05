@@ -1,0 +1,313 @@
+// ID: RESPONSIBLE  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма «Ведение ответственного» — дополнительное окно планировщика.
+// Назначение: для выбранной задачи указать (изменить/снять) ответственного И его почту —
+// данные пишутся в таблицу ответственных RESPONSIBLE_FOR_TASK (колонки TASK_ID, BA_NAME,
+// RESPONSIBLE, MAIL). Запись — UnavailabilityStore.SaveTaskResponsible (insert … on conflict
+// … do update), чтение — UnavailabilityPlanner.LoadResponsibleTable/FindTaskResponsible.
+//
+// Открывается из формы «Планировщик» (кнопка «Изменить ответственного» и пункт меню
+// «Ввести вручную…»): задача передаётся КОМАНДОЙ формы — SendCommand("EditResponsible", TaskId),
+// обработка — в ResponsibleFormOnCommand (Args.Command / Args.Argument / Args.Result).
+//
+// ВАЖНО: имя класса должно совпадать с именем формы-объекта репозитория; класс — Public
+// (иначе SendCommand из другой формы не сможет обратиться к его членам). Форму нужно добавить
+// в «Ссылки сборок» сборки/формы, из которой её открывают («Планировщик»).
+// Копируйте в свою форму ТОЛЬКО тела обработчиков; имена контролов — под свою форму.
+
+Public Class RESPONSIBLEForm: Form
+	// --- контролы окна (адаптируйте имена/типы под реальную форму) ---
+	TaskIdEditBox: EditBox;           // Id задачи (ключ строки таблицы ответственных)
+	RespNameEditBox: EditBox;         // ФИО/логин ответственного
+	RespMailEditBox: EditBox;         // почта ответственного (MAIL) — адрес для уведомлений
+	RespInfoMemo: Memo;               // состояние строки, бизнес-приложение, подсказки
+	RespLayoutK: Double;              // масштаб раскладки (макет окна снят в 760x300)
+
+	// --- кнопки окна (имена-предложение: привяжите OnClick к обработчикам) ---
+	BtnRespSave: Button;              // «Сохранить»            → SaveRespOnClick
+	BtnRespClear: Button; // «Снять ответственного» → ClearRespOnClick
+
+	Map_: SortedList; // карта «имя → контрол», созданных фабрикой
+	PendingTaskId: String;            // задача, переданная командой EditResponsible
+
+	// === 0.1) Контролы формы ===
+	// Все контролы окна — динамические (поля, метка, Memo, кнопки): их создаёт ФАБРИКА по описанию
+	// ScreenSpecText, объявлять и размещать вручную ничего не нужно.
+	Sub CreateFormComponents;
+	Var
+		Ctl: Button;
+	Begin
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), RespLayoutK);
+		Try
+			TaskIdEditBox := UiFind(Map_, "TaskIdEditBox");
+			RespNameEditBox := UiFind(Map_, "RespNameEditBox");
+			RespMailEditBox := UiFind(Map_, "RespMailEditBox");
+			RespInfoMemo := UiFind(Map_, "RespInfoMemo");
+			BtnRespSave := UiFind(Map_, "BtnRespSave");
+			BtnRespClear := UiFind(Map_, "BtnRespClear");
+		Except On e: Exception Do
+			Debug.WriteLine("Ответственный: контролы не получены из карты фабрики — " + e.Message);
+		End Try;
+
+		Ctl := UiFind(Map_, "BtnRespSave") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := SaveRespOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRespClear") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := ClearRespOnClick;
+		End If;
+	End Sub CreateFormComponents;
+
+	// === Описание динамической части экрана (координаты — в единицах макета 760x300) ===
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"LABEL;LblRespTask;Задача:;16;18;120;20;" + #13 + #10
+			+ "EDIT;TaskIdEditBox;;140;16;604;24;" + #13 + #10
+			+ "LABEL;LblRespName;Ответственный:;16;54;120;20;" + #13 + #10
+			+ "EDIT;RespNameEditBox;;140;52;604;24;" + #13 + #10
+			+ "LABEL;LblRespMail;Почта:;16;90;120;20;" + #13 + #10
+			+ "EDIT;RespMailEditBox;;140;88;604;24;" + #13 + #10
+			+ "MEMO;RespInfoMemo;;16;124;728;100;" + #13 + #10
+			+ "BUTTON;BtnRespSave;Сохранить;16;236;200;30;SaveRespOnClick" + #13 + #10
+			+ "BUTTON;BtnRespClear;Снять ответственного;226;236;260;30;ClearRespOnClick" + #13 + #10
+			+ "LABEL;LblRespHint;Закрыть окно — крестик в заголовке;500;242;244;20;";
+	End Function ScreenSpecText;
+
+
+	// === 0) Создание окна: свойства формы, контролы, раскладка ===
+	// Привяжите к событию формы OnCreate (Args: IEventArgs).
+	Sub ResponsibleFormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		
+		RespLayoutK := 1.0; // 1.0 — «как в макете» (760x300)
+		Self.Height := Double.RoundInt(660 * RespLayoutK);
+		CreateFormComponents;
+		SetupRespLayout;
+	End Sub ResponsibleFormOnCreate;
+
+	// Показ окна. Данные уже получены командой EditResponsible (см. ResponsibleFormOnCommand),
+	// поэтому здесь только заполняем поля — на случай, если команда пришла до создания контролов.
+	Sub ResponsibleFormOnShow(Sender: Object; Args: IEventArgs);
+	Begin
+		If PendingTaskId <> "" Then
+			LoadResponsibleForTask(PendingTaskId);
+		End If;
+	End Sub ResponsibleFormOnShow;
+
+	// Команды от формы «Планировщик»: EditResponsible с аргументом — Id задачи.
+	// SendCommand получает Args.Result (True — команда обработана).
+	Sub ResponsibleFormOnCommand(Sender: Object; Args: ICommandEventArgs);
+	Begin
+		If Args.Command = "EditResponsible" Then
+			PendingTaskId := String.Trim(UnvVarToStr(Args.Argument));
+			If PendingTaskId <> "" Then
+				Self.Text := "Ответственный по задаче: " + PendingTaskId;
+				LoadResponsibleForTask(PendingTaskId);
+			End If;
+			Args.Result := True;
+		End If;
+	End Sub ResponsibleFormOnCommand;
+
+	// Разместить контрол по макетным координатам с учётом масштаба RespLayoutK
+	Sub RespPlace(C: IControl; L, T, W, H: Integer);
+	Begin
+		C.Left := Double.RoundInt(L * RespLayoutK);
+		C.Top := Double.RoundInt(T * RespLayoutK);
+		C.Width := Double.RoundInt(W * RespLayoutK);
+		C.Height := Double.RoundInt(H * RespLayoutK);
+	End Sub RespPlace;
+
+	// Свойства формы и Memo: перенос строк, вертикальная полоса прокрутки, только чтение
+	Sub SetupRespLayout;
+	Begin
+		Self.Width := Double.RoundInt(760 * RespLayoutK);
+		Self.Height := Double.RoundInt(300 * RespLayoutK);
+		If Not IsNull(RespInfoMemo) Then
+			Try
+				RespInfoMemo.ReadOnly := True;
+				RespInfoMemo.WordWrap := True;
+				RespInfoMemo.ScrollBars := ControlScrollStyle.Vertical;
+			Except On e: Exception Do
+				Debug.WriteLine("Ответственный: настройка Memo — " + e.Message);
+			End Try;
+		End If;
+		// Автомасштаб при изменении размеров окна (константа UI_AUTOSIZE_ON_RESIZE в TaskContainerLib):
+		// поля и Memo тянутся по ширине, Memo и кнопки — ещё и по высоте (низ окна)
+		SetAutoSize(TaskIdEditBox, True, False);
+		SetAutoSize(RespNameEditBox, True, False);
+		SetAutoSize(RespMailEditBox, True, False);
+		SetAutoSize(RespInfoMemo, True, True);
+		SetAutoSize(BtnRespSave, False, True);
+		SetAutoSize(BtnRespClear, False, True);
+	End Sub SetupRespLayout;
+
+	// Текст в Memo построчно (разделитель — UNAVAIL_CRLF)
+	Sub SetRespMemoLines(S: String);
+	Var
+		P: Integer;
+	Begin
+		If IsNull(RespInfoMemo) Then
+			Return;
+		End If;
+		Try
+			RespInfoMemo.Lines.Clear;
+			While S <> "" Do
+				P := S.IndexOf(UNAVAIL_CRLF);
+				If P < 0 Then
+					RespInfoMemo.Lines.Add(S);
+					S := "";
+				Else
+					RespInfoMemo.Lines.Add(S.SubString(0, P));
+					S := S.SubString(P + 2, S.Length - P - 2);
+				End If;
+			End While;
+		Except On e: Exception Do
+			Debug.WriteLine("Ответственный: вывод в Memo — " + e.Message);
+		End Try;
+	End Sub SetRespMemoLines;
+
+	// Заполнить поля окна по задаче: ФИО и почта из таблицы ответственных, БП — обходом владельцев
+	Sub LoadResponsibleForTask(TaskId: String);
+	Var
+		Rows: ArrayList;
+		Row: CTaskResponsible;
+		Desc: IMetabaseObjectDescriptor;
+		BaName, S: String;
+	Begin
+		Try
+			If Not IsNull(TaskIdEditBox) Then
+				TaskIdEditBox.Text := TaskId;
+			End If;
+			BaName := "";
+			Try
+				Desc := MetabaseClass.Active.ItemById(TaskId);
+				If Not IsNull(Desc) Then
+					BaName := GetTaskBusinessAppName(Desc);
+				End If;
+			Except On e: Exception Do
+				Debug.WriteLine("Ответственный: бизнес-приложение задачи — " + e.Message);
+				BaName := "";
+			End Try;
+
+			Rows := LoadResponsibleTable(RESP_TABLE_ID);
+			Row := FindTaskResponsible(Rows, TaskId);
+			S := "Задача: " + TaskId + UNAVAIL_CRLF;
+			If BaName <> "" Then
+				S := S + "Бизнес-приложение: " + BaName + UNAVAIL_CRLF;
+			End If;
+			If IsNull(Row) Then
+				If Not IsNull(RespNameEditBox) Then
+					RespNameEditBox.Text := "";
+				End If;
+				If Not IsNull(RespMailEditBox) Then
+					RespMailEditBox.Text := "";
+				End If;
+				S := S + "Строки в таблице " + RESP_TABLE_ID + " нет — заполните ФИО и почту "
+					+ "и нажмите «Сохранить».";
+			Else
+				If Not IsNull(RespNameEditBox) Then
+					RespNameEditBox.Text := Row.ResponsibleUser;
+				End If;
+				If Not IsNull(RespMailEditBox) Then
+					RespMailEditBox.Text := Row.Mail;
+				End If;
+				S := S + "Текущий ответственный: " + Row.ResponsibleUser;
+				If Row.Mail = "" Then
+					S := S + " (почта НЕ заполнена!)";
+				End If;
+				S := S + UNAVAIL_CRLF + "Без почты уведомления о недоступности этому "
+					+ "ответственному не отправятся.";
+			End If;
+			SetRespMemoLines(S);
+		Except On e: Exception Do
+			Debug.WriteLine("Ответственный: загрузка строки — " + e.Message);
+		End Try;
+	End Sub LoadResponsibleForTask;
+
+	// «Сохранить»: пишем ФИО и почту в таблицу ответственных (пустое ФИО — строка удаляется)
+	Sub SaveRespOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		TaskId, Resp, Mail, BaName, Msg: String;
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		TaskId := "";
+		Resp := "";
+		Mail := "";
+		If Not IsNull(TaskIdEditBox) Then
+			TaskId := String.Trim(TaskIdEditBox.Text);
+		End If;
+		If Not IsNull(RespNameEditBox) Then
+			Resp := String.Trim(RespNameEditBox.Text);
+		End If;
+		If Not IsNull(RespMailEditBox) Then
+			Mail := String.Trim(RespMailEditBox.Text);
+		End If;
+		If TaskId = "" Then
+			WinApplication.InformationBox("Укажите задачу (её Id) — без него строку сохранить некуда");
+			Return;
+		End If;
+		If (Resp <> "") And (Mail = "") Then
+			If Not WinApplication.ConfirmationBox("Почта не заполнена: уведомления о недоступности "
+				+ "этому ответственному не отправятся." + UNAVAIL_CRLF + "Сохранить так?") Then
+				Return;
+			End If;
+		End If;
+
+		// БП задачи — обходом владельцев (та же функция, что и при построении плана)
+		BaName := "";
+		Try
+			Desc := MetabaseClass.Active.ItemById(TaskId);
+			If Not IsNull(Desc) Then
+				BaName := GetTaskBusinessAppName(Desc);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Ответственный: бизнес-приложение задачи — " + e.Message);
+		End Try;
+
+		Try
+			If SaveTaskResponsible(RESP_TABLE_ID, RESP_FIELD_TASK, RESP_FIELD_BA, RESP_FIELD_RESPONSIBLE,
+				RESP_FIELD_MAIL, TaskId, BaName, Resp, Mail) Then
+				If Resp = "" Then
+					Msg := "Ответственный с задачи «" + TaskId + "» снят (строка удалена).";
+				Else
+					Msg := "Сохранено: «" + TaskId + "» → " + Resp + " <" + Mail + ">";
+				End If;
+				LoadResponsibleForTask(TaskId);
+				WinApplication.InformationBox(Msg);
+			Else
+				WinApplication.InformationBox("Не удалось сохранить ответственного (таблица "
+					+ RESP_TABLE_ID + " недоступна или нет прав на запись)");
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Ответственный: сохранение — " + e.Message);
+			WinApplication.InformationBox("Ошибка сохранения: " + e.Message);
+		End Try;
+	End Sub SaveRespOnClick;
+
+	// «Снять ответственного»: очищаем поля и сохраняем (пустое ФИО = удалить строку)
+	Sub ClearRespOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		TaskId: String;
+	Begin
+		TaskId := "";
+		If Not IsNull(TaskIdEditBox) Then
+			TaskId := String.Trim(TaskIdEditBox.Text);
+		End If;
+		If TaskId = "" Then
+			WinApplication.InformationBox("Укажите задачу (её Id)");
+			Return;
+		End If;
+		If Not WinApplication.ConfirmationBox("Снять ответственного с задачи «" + TaskId + "»?") Then
+			Return;
+		End If;
+		If Not IsNull(RespNameEditBox) Then
+			RespNameEditBox.Text := "";
+		End If;
+		If Not IsNull(RespMailEditBox) Then
+			RespMailEditBox.Text := "";
+		End If;
+		SaveRespOnClick(Sender, Args);
+	End Sub ClearRespOnClick;
+End Class RESPONSIBLEForm;
+

@@ -1,0 +1,2695 @@
+// ID: SCHEDULER  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма «Планировщик» (OBJ1473491) — ЕДИНАЯ форма: базовый планировщик + панель недоступности.
+// Одна форма = один класс; имя класса совпадает с именем класса формы-объекта репозитория.
+// Контролы не размещаются вручную: динамическая часть описывается текстом (ScreenSpecText) и
+// создаётся фабрикой (UiFactory.fore); таблицы/пикеры создаются конструктором, если их нет.
+//
+// Почему объявления контролов оставлены (это «алиасы», а не место создания). Обработчики обращаются
+// к контролам по имени поля (`PlanTable.Items`, `UnavailSummaryMemo.Lines`, `ChainNameEditBox.Text`) —
+// это типизированный доступ, и тела обработчиков не пришлось править при переходе на фабрику.
+// Сами контролы создают: фабрика (`UiCreateScaled` → `Map_`) — для кнопок/полей/меток/Memo,
+// конструктор (`If IsNull(X) Then X := New X.Create`) — для таблиц/пикеров/диалогов. Поле заполняется
+// из карты: `X := UiFind(Map_, "X")`. Альтернатива без объявлений — брать контрол из карты по месту
+// (`UiButton(Map_, "BtnBuild")`) или объявлять локальные переменные в каждом обработчике: правок
+// больше, контроль типов слабее (Variant), зато в классе нет «полей-алиасов» (см. REFERENCE §5.28).
+//
+// Поток панели недоступности: задать период простоя → «Построить список» (затронутые задачи) →
+// отметить флажками → «Не запускать»/«Перепланировать» (для отмеченных) → доп. расписание
+// раскладывается равномерно после периода, его можно править и сохранять/загружать в файл.
+// В репозиторий пишет только UnavailabilityStore.fore (UNAVAILABILITY / UNAVAILABILITY_PLAN).
+//
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Class SCHEDULERForm: Form
+	MetabaseEtlOpenDialog: MetabaseOpenDialog;
+	MetabaseListView2: MetabaseListView;
+	ChainNameEditBox: EditBox;
+	ResponsiblePersonLabel: Label;   // UserTag задачи (только показ; автор/ответственный по объекту)
+	ChainStatusTextLabel: Label;
+	NextStartTextLabel: Label;
+	LastSuccesfullStartTextLabel: Label;
+	LabelAvgTimeVal: Label;
+	Label1: Label;
+	LayoutK: Double;                  // масштаб раскладки формы (обе колонки; макет снят в 1780x1300)
+	BtnSelectContainer: Button;       // «Выбрать контейнеры…» → SelectContainerOnClick (MultiSelect)
+	BtnAnalyse: Button;               // «Анализ»             → AnalyseButtonOnClick
+	BtnApplyPlan: Button;             // «Применить план»     → ApplyPlanOnClick
+	CurrentContainer: IMetabaseObjectDescriptor;   // ПЕРВЫЙ из выбранных (запасной список/карточка)
+	CurrentContainers: ArrayList;                  // ВСЕ выбранные контейнеры задач (план/анализ)
+	CurrentContainerIndex: Integer;                // какой контейнер показывает левый список
+	TaskListMerged: ListView;                      // ОБЪЕДИНЁННЫЙ список задач: все выбранные контейнеры
+	TaskRows: ArrayList;                           // CTaskRef в порядке строк TaskListMerged (строка ↔ задача)
+	TaskListFilter: String;                        // фильтр объединённого списка ("" — все контейнеры)
+	Map_: SortedList;                     // карта «имя → контрол», созданных фабрикой
+	LblStatus: Label;                     // строка статуса блока «Затронутые задачи»
+	MenuMore, MenuUnavail, MenuMark, MenuDecision, MenuPlan, MenuExport, MenuNotify, MenuService: PopupMenu;
+	Specs_: ArrayList;                    // описание экрана после сдвига — нужно для пересчёта под окно
+	SelectedTaskId_: String;              // задача, выбранная в списке (запоминается при клике по строке)
+	LAYOUT_TOP_SHIFT: Integer;            // подъём всей компоновки вверх (единицы макета)
+	GROUP_CAPTION: Integer;               // высота подписи GroupBox: клиентская область начинается ниже
+	PANEL_X_SHIFT: Integer;               // сдвиг правой колонки вправо (больше зазор между колонками)
+	PANEL_X_GROW: Integer;                // расширение блоков/таблиц правой колонки
+	
+	UnavailStartDatePicker: DateTimePicker;   // дата начала (Kind = «дата»)
+	UnavailStartTimePicker: DateTimePicker;   // время начала (Kind = «время»)
+	UnavailEndDatePicker: DateTimePicker;     // дата окончания (Kind = «дата»)
+	UnavailEndTimePicker: DateTimePicker;     // время окончания (Kind = «время»)
+	UnavailSummaryMemo: Memo;             // сообщения о результатах операций (блок «Сообщения»)
+	PlanTable: ListView;                  // таблица плана: все пересекающиеся задачи + колонки-«крестики»
+	UnavailRecordsList: ListView; // список периодов недоступности из таблицы (выбор периода)
+	StoredPlanTable: ListView;            // просмотр плана, сохранённого в таблице (8 колонок)
+	UnavailWindow: CUnavailWindow;
+	UnavailImpacts: ArrayList;
+	UnavailRecords: ArrayList; // записи о недоступности (CUnavailRecord)
+	UnavailRecordKeys: ArrayList;         // ключи записей в порядке строк списка
+	UnavailSelectedKey: Integer; // выбранная запись недоступности (0 — не выбрана)
+	TableFilter: String;                  // текущий фильтр таблицы плана (пусто = без фильтра)
+	RespIndex_: SortedList;               // индекс таблицы ответственных: Id задачи → CTaskResponsible
+	BtnEditResp: Button; // «Изменить ответственного» → OpenResponsibleForm (форма ответственного)
+	RespMenuButton: MenuButton;   // кнопка с выпадающим меню (Forms): свойство Menu = RespPopupMenu
+	RespPopupMenu: PopupMenu;     // всплывающее меню для RespMenuButton (пункты строятся перед показом)
+	BtnBuild: Button;             // «Построить список»             → BuildAffectedOnClick
+	BtnApplyFilter: Button;       // «Фильтр»                       → ApplyFilterOnClick
+	BtnResetFilter: Button;       // «Сброс»                        → ResetFilterOnClick
+	FilterEditBox: EditBox;       // фильтр таблицы плана: Id/название/БП/ответственный
+		Item: IListViewItem;
+		Desc: IMetabaseObjectDescriptor;
+		Records: ArrayList;
+		Rec: CUnavailRecord;
+		W: CPlanWindow;
+		Windows: ArrayList;
+		I: Integer;
+
+	// === 0) Создание формы: свойства формы, контролы и раскладка по макетам ===
+	// Привяжите к событию формы OnCreate (Args: IEventArgs). Форма ОДНА: планировщик + панель.
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		LayoutK := 0.8;               // масштаб: 1.0 — «как в макете»; 0.8 — окно ~1540x1040 (влезает на FullHD)
+		LAYOUT_TOP_SHIFT := 20;       // компоновка поднята вверх (единицы макета)
+		GROUP_CAPTION := 15;          // подпись GroupBox: клиентская область группы ниже на ~15 единиц
+		PANEL_X_SHIFT := 48;          // правая колонка сдвинута вправо: зазор между колонками 72 единицы
+		PANEL_X_GROW := 100;          // блоки/таблицы правой колонки шире на 100 единиц (меньше тесноты)
+		CreateFormComponents;         // контролы: фабрика по описанию + таблицы/пикеры конструктором
+		ConfigurePeriodPickers;       // вид/формат пикеров периода (значения не трогает; вызов повторяемый)
+		SetupPlannerLayout;           // размещение таблиц/пикеров планировщика
+		SetupPanelLayout; // размещение таблиц/пикеров панели недоступности
+		// Привязки (Anchors) НЕ используем: только пиксельные размеры (UI_AUTOSIZE_ON_RESIZE = False),
+		// поэтому при развороте окна контролы остаются на своих местах и ничего не «разъезжается».
+	End Sub FormOnCreate;
+
+	// === 0.1) Контролы формы ===
+	// Динамическая часть (кнопки, поля, метки, Memo, панели) создаётся ФАБРИКОЙ по описанию
+	// ScreenSpecText; таблицы, пикеры и диалоги — конструктором, если их нет на форме.
+	Sub CreateFormComponents;
+	Var
+		Ctl: Button;
+	Begin
+		// 1) Динамическая часть (кнопки, поля, метки, Memo) И рамки блоков — фабрикой по описанию
+		//    ScreenSpecText. Строки GROUP идут в описании ПЕРВЫМИ: группы создаются раньше таблиц,
+		//    поэтому таблицы/пикеры (их создаёт конструктор ниже) рисуются ПОВЕРХ рамок, а не наоборот.
+		Specs_ := UiSpecsFromText(ScreenSpecText);
+		UiShiftSpecsTop(Specs_, -LAYOUT_TOP_SHIFT);                        // компоновка поднята вверх
+		UiShiftSpecsRight(Specs_, 806, PANEL_X_SHIFT, PANEL_X_GROW);        // правая колонка шире и правее
+		Map_ := UiCreateScaled(Self, Specs_, LayoutK);
+
+		// 2) Таблицы, пикеры и диалоги — конструктором, если их нет на форме.
+		// ВАЖНО: списки репозитория (MetabaseListView) размещаются на форме ЗАРАНЕЕ —
+		// динамическое создание этих компонентов в коде приводило к падению приложения на стенде.
+		// Здесь настраиваются только уже существующие контролы (см. раскладку ниже).
+		If IsNull(UnavailRecordsList) Then
+			UnavailRecordsList := New ListView.Create;
+			UnavailRecordsList.Parent := Self;
+		End If;
+		If IsNull(UnavailStartDatePicker) Then
+			UnavailStartDatePicker := New DateTimePicker.Create;
+			UnavailStartDatePicker.Parent := Self;
+		End If;
+		If IsNull(UnavailStartTimePicker) Then
+			UnavailStartTimePicker := New DateTimePicker.Create;
+			UnavailStartTimePicker.Parent := Self;
+		End If;
+		If IsNull(UnavailEndDatePicker) Then
+			UnavailEndDatePicker := New DateTimePicker.Create;
+			UnavailEndDatePicker.Parent := Self;
+		End If;
+		If IsNull(UnavailEndTimePicker) Then
+			UnavailEndTimePicker := New DateTimePicker.Create;
+			UnavailEndTimePicker.Parent := Self;
+		End If;
+		If IsNull(PlanTable) Then
+			PlanTable := New ListView.Create;
+			PlanTable.Parent := Self;
+		End If;
+		If IsNull(StoredPlanTable) Then
+			StoredPlanTable := New ListView.Create;
+			StoredPlanTable.Parent := Self;
+		End If;
+		// ОБЪЕДИНЁННЫЙ список задач (по всем выбранным контейнерам) — обычный ListView, создаём кодом:
+		// у MetabaseListView.Root только ОДИН корень, поэтому объединить контейнеры можно лишь своим
+		// списком (заполняется в RefillTaskList; MetabaseListView2 остаётся запасным вариантом).
+		If IsNull(TaskListMerged) Then
+			TaskListMerged := New ListView.Create;
+			TaskListMerged.Parent := Self;
+		End If;
+		If IsNull(MetabaseEtlOpenDialog) Then
+			MetabaseEtlOpenDialog := New MetabaseOpenDialog.Create;
+			// невизуальный компонент: Parent не нужен
+		End If;
+
+		If IsNull(RespPopupMenu) Then
+			RespPopupMenu := New PopupMenu.Create; // невизуальный компонент: Parent не нужен
+		End If;
+		If IsNull(RespMenuButton) Then
+			RespMenuButton := New MenuButton.Create;       // кнопка с меню (Forms): Menu := PopupMenu
+			RespMenuButton.Parent := Self;
+		End If;
+
+		// 3) Алиасы динамических контролов (имя из описания → поле формы) и подписка кнопок
+		Try
+			BtnSelectContainer := UiFind(Map_, "BtnSelectContainer");
+			ChainNameEditBox := UiFind(Map_, "ChainNameEditBox");
+			ResponsiblePersonLabel := UiFind(Map_, "ResponsiblePersonLabel");
+			ChainStatusTextLabel := UiFind(Map_, "ChainStatusTextLabel");
+			NextStartTextLabel := UiFind(Map_, "NextStartTextLabel");
+			LastSuccesfullStartTextLabel := UiFind(Map_, "LastSuccesfullStartTextLabel");
+			LabelAvgTimeVal := UiFind(Map_, "LabelAvgTimeVal");
+			Label1 := UiFind(Map_, "Label1");
+			LblStatus := UiFind(Map_, "LblStatus");
+			BtnAnalyse := UiFind(Map_, "BtnAnalyse");
+			BtnApplyPlan := UiFind(Map_, "BtnApplyPlan");
+			BtnEditResp := UiFind(Map_, "BtnEditResp");
+			BtnBuild := UiFind(Map_, "BtnBuild");
+			UnavailSummaryMemo := UiFind(Map_, "UnavailSummaryMemo");
+			FilterEditBox := UiFind(Map_, "FilterEditBox");
+			BtnApplyFilter := UiFind(Map_, "BtnApplyFilter");
+			BtnResetFilter := UiFind(Map_, "BtnResetFilter");
+		Except On e: Exception Do
+			Debug.WriteLine("Форма: контролы не получены из карты фабрики — " + e.Message);
+		End Try;
+
+		// --- Подписка динамических кнопок на обработчики ---
+		Ctl := UiFind(Map_, "BtnSelectContainer") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := SelectContainerOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnAddContainers") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := AddContainersOnClick;       // добавить контейнеры «в набор» (из другой папки)
+		End If;
+		Ctl := UiFind(Map_, "BtnAnalyse") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := AnalyseButtonOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnApplyPlan") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := ApplyPlanOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnEditResp") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := EditResponsibleOnClick;     // запись в таблицу ответственных
+		End If;
+		Ctl := UiFind(Map_, "BtnBuild") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := BuildAffectedOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnApplyFilter") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := ApplyFilterOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnResetFilter") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := ResetFilterOnClick;
+		End If;
+	End Sub CreateFormComponents;
+
+	// === Описание динамической части экрана (координаты — в единицах макета) ===
+	// Формат: Kind;Name;Caption;Left;Top;Width;Height;Handler
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"# Рамки блоков (GROUP). Идут первыми: группы создаются раньше таблиц (их делает конструктор),"
+			+ #13 + #10
+			+ "# поэтому таблицы/пикеры рисуются поверх рамок. Координаты детей — от КЛИЕНТСКОЙ области группы"
+			+ #13 + #10
+			+ "# (у GroupBox подпись сверху занимает ~15 px — у детей Top уменьшен на эту величину)."
+			+ #13 + #10
+			+ "# При переносе на другой размер шрифта/тему подпись может отличаться — тогда правьте только Top детей."
+			+ #13 + #10
+			+ "GROUP;GrpTaskCard;Карточка задачи;26;110;756;240" + #13 + #10
+			+ "GROUP;GrpTasks;Задачи контейнера;26;354;756;600" + #13 + #10
+			+ "GROUP;GrpPeriods;Периоды недоступности;818;106;936;170" + #13 + #10
+			+ "GROUP;GrpPeriod;Период недоступности;818;314;936;62" + #13 + #10
+			+ "GROUP;GrpMsg;Сообщения;818;380;936;118" + #13 + #10
+			+ "GROUP;GrpPlan;Раскладка (план);818;504;936;556" + #13 + #10
+			+ "GROUP;GrpStored;Сохранённый план (из таблицы);818;1064;936;110" + #13 + #10
+			+ "BUTTON;BtnSelectContainer;Выбрать контейнеры…;26;76;190;28;SelectContainerOnClick" + #13 + #10
+			+ "BUTTON;BtnAddContainers;Добавить контейнеры…;566;76;228;28;AddContainersOnClick" + #13 + #10
+			+ "EDIT;ChainNameEditBox;;226;76;330;28;" + #13 + #10
+			+ "LABEL;LblCapResponsible;Ответственный (по объекту):;12;15;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;ResponsiblePersonLabel;;232;15;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LblCapState;Состояние задачи:;12;43;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;ChainStatusTextLabel;;232;43;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LblCapNextStart;Ближайший запуск:;12;71;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;NextStartTextLabel;;232;71;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LblCapLastStart;Последний успешный запуск:;12;99;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LastSuccesfullStartTextLabel;;232;99;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LblCapAvgTime;Средняя длительность:;12;127;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LabelAvgTimeVal;;232;127;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;LblCapRespTask;Ответственный (по задаче):;12;155;200;20;Parent=GrpTaskCard" + #13 + #10
+			+ "LABEL;Label1;;232;155;430;20;Parent=GrpTaskCard" + #13 + #10
+			+ "BUTTON;BtnEditResp;Изменить ответственного;12;183;230;28;EditResponsibleOnClick;Parent=GrpTaskCard"
+			+ #13 + #10
+			+ "BUTTON;BtnAnalyse;Анализ;26;988;150;30;AnalyseButtonOnClick" + #13 + #10
+			+ "BUTTON;BtnApplyPlan;Применить план;186;988;200;30;ApplyPlanOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuMore;Ещё ▾;396;988;180;30;MenuMoreOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuUnavail;Недоступности ▾;818;76;230;28;MenuUnavailOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuNotify;Уведомления ▾;1058;76;230;28;MenuNotifyOnClick" + #13 + #10
+			+ "MEMO;UnavailSummaryMemo;;4;45;928;50;;;Parent=GrpMsg" + #13 + #10
+			+ "EDIT;FilterEditBox;;14;20;400;28;Parent=GrpPlan" + #13 + #10
+			+ "BUTTON;BtnApplyFilter;Фильтр;428;20;140;28;ApplyFilterOnClick;Parent=GrpPlan" + #13 + #10
+			+ "BUTTON;BtnResetFilter;Сброс;576;20;140;28;ResetFilterOnClick;Parent=GrpPlan" + #13 + #10
+			+ "BUTTON;BtnRecalcPlan;Пересчитать план;724;20;200;28;RecalcPlanOnClick;Parent=GrpPlan" + #13 + #10
+			+ "BUTTON;BtnBuild;Построить список;818;1180;170;28;BuildAffectedOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuMark;Отметки ▾;998;1180;180;28;MenuMarkOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuDecision;Решение ▾;1186;1180;200;28;MenuDecisionOnClick" + #13 + #10
+			+ "LABEL;LblStatus;;4;52;900;20;Parent=GrpPlan" + #13 + #10
+			+ "BUTTON;BtnMenuPlan;План ▾;818;1214;220;28;MenuPlanOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuExport;Выгрузка ▾;1046;1214;240;28;MenuExportOnClick" + #13 + #10
+			+ "BUTTON;BtnMenuService;Сервис ▾;1294;1214;220;28;MenuServiceOnClick";
+	End Function ScreenSpecText;
+
+	Sub SelectContainerOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Containers: ArrayList;
+	Begin
+		// ⚠ Диалог репозитория при MultiSelect := True «теряет» выделение при переходе по папкам,
+		// поэтому собрать контейнеры из РАЗНЫХ папок одним выбором не получается: «Выбрать контейнеры…»
+		// ЗАМЕНЯЕТ набор, а «Добавить контейнеры…» (BtnAddContainers) — ДОБАВЛЯЕТ к нему (пункт
+		// «Ещё ▾» → «Добавить контейнеры… (из другой папки)») — так и набирается несколько контейнеров.
+		Containers := PickContainers;
+		If (IsNull(Containers)) Or (Containers.Count = 0) Then
+			Debug.WriteLine("Планировщик: выбор контейнеров отменён — набор не меняем");
+			Return;
+		End If;
+		FillTasksFromContainers(Containers);           // ЗАМЕНА набора
+	End Sub SelectContainerOnClick;
+
+	// Диалог выбора контейнеров задач. Возвращает список выбранных (пустой — отмена/ничего не выбрано).
+	Function PickContainers: ArrayList;
+	Var
+		Filter: IMetabaseDialogClassFilter;
+		Objects: IMetabaseObjectDescriptorList;
+		Containers: ArrayList;
+		Cont: IMetabaseObjectDescriptor;
+		I: Integer;
+	Begin
+		Containers := New ArrayList.Create;
+		// ВНИМАНИЕ: у IMetabaseDialogMetaclassFilter свойство ObjectMetaclass имеет тип
+		// MetabaseObjectMetaclass (ГРУППЫ классов: SCHEDULEDTASK_CLASS = 5376, …), а не
+		// MetabaseObjectClass. Чтобы фильтровать по КОНКРЕТНОМУ классу — используем ClassFilter
+		// со свойством ObjectClass (тип MetabaseObjectClass, §5.18).
+		Filter := New MetabaseDialogClassFilter.Create;
+		Filter.ObjectClass := MetabaseObjectClass.KE_CLASS_TASK_CONTAINTER;
+		Filter.Description := "Контейнер запланированных задач";
+		MetabaseEtlOpenDialog.Filters.Clear;
+		MetabaseEtlOpenDialog.Filters.AddFilter(Filter);
+		MetabaseEtlOpenDialog.FilterIndex := 0;
+		// НЕСКОЛЬКО контейнеров за один выбор: MultiSelect = True, выбранные — в Objects
+		// (IMetabaseObjectDescriptorList; см. пример справки по MetabaseOpenDialog).
+		MetabaseEtlOpenDialog.MultiSelect := True;
+
+		If Not MetabaseEtlOpenDialog.Execute(Self) Then
+			Return Containers;                         // отмена диалога — пустой список
+		End If;
+		Objects := Null;
+		Try
+			Objects := MetabaseEtlOpenDialog.Objects;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: список выбранных контейнеров — " + e.Message);
+			Objects := Null;
+		End Try;
+		If Not IsNull(Objects) Then
+			For I := 0 To Objects.Count - 1 Do
+				Cont := Objects.Item(I) As IMetabaseObjectDescriptor;
+				If Not IsNull(Cont) Then
+					Containers.Add(Cont);
+				End If;
+			End For;
+		End If;
+		If Containers.Count = 0 Then
+			// резерв: диалог вернул единственный объект (или Objects недоступен)
+			Cont := MetabaseEtlOpenDialog.Object;
+			If Not IsNull(Cont) Then
+				Containers.Add(Cont);
+			End If;
+		End If;
+		Return Containers;
+	End Function PickContainers;
+
+	// «Добавить контейнеры…» — к уже выбранным контейнерам добавляются новые (в т. ч. из ДРУГОЙ папки);
+	// повторы по Id пропускаются. Так набирается набор при «слетающем» выделении в диалоге.
+	Sub AddContainersOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Picked, Merged: ArrayList;
+		Added: Integer;
+	Begin
+		Picked := PickContainers;
+		If (IsNull(Picked)) Or (Picked.Count = 0) Then
+			Debug.WriteLine("Планировщик: добавление контейнеров отменено");
+			Return;
+		End If;
+		Merged := MergeContainers(CurrentContainers, Picked);   // без дублей по Id (в верхнем регистре)
+		Added := Merged.Count - ContainersCount(CurrentContainers);
+		FillTasksFromContainers(Merged);
+		If Added > 0 Then
+			WinApplication.InformationBox("Добавлено контейнеров: " + Added.ToString
+				+ ". Всего выбрано: " + Merged.Count.ToString + ".");
+		Else
+			WinApplication.InformationBox("Новых контейнеров нет — выбранные уже в наборе.");
+		End If;
+	End Sub AddContainersOnClick;
+
+	// «Очистить выбор контейнеров» (пункт меню «Ещё ▾»)
+	Sub ClearContainersOnClick;
+	Begin
+		If ContainersCount(CurrentContainers) = 0 Then
+			Return;
+		End If;
+		FillTasksFromContainers(New ArrayList.Create);
+	End Sub ClearContainersOnClick;
+
+	// Убрать один контейнер из набора (пункт меню «Убрать контейнер «…»»)
+	Sub RemoveContainerFromSet(Id: String);
+	Var
+		Rest: ArrayList;
+		Cont: IMetabaseObjectDescriptor;
+		I: Integer;
+	Begin
+		Rest := New ArrayList.Create;
+		If Not IsNull(CurrentContainers) Then
+			For I := 0 To CurrentContainers.Count - 1 Do
+				Cont := CurrentContainers.Item(I) As IMetabaseObjectDescriptor;
+				If (Not IsNull(Cont)) And (String.ToUpper(Cont.Id) <> String.ToUpper(Id)) Then
+					Rest.Add(Cont);
+				End If;
+			End For;
+		End If;
+		FillTasksFromContainers(Rest);      // набор мог стать пустым — это нормально
+	End Sub RemoveContainerFromSet;
+
+	// Контейнеры выбираются СПИСКОМ, задачи «подтягиваются» из ВСЕХ выбранных (план переноса, анализ,
+	// применение плана). Левый список задач: при ОДНОМ контейнере — штатный MetabaseListView2 (Root),
+	// при ДВУХ и более — объединённый TaskListMerged (см. RefillTaskList); фильтр объединённого
+	// списка переключается пунктом меню «Ещё ▾» (NextTaskListFilter).
+	Sub FillTasksFromContainers(Containers: ArrayList);
+	Var
+		Tasks: ArrayList;
+		Text: String;
+	Begin
+		If IsNull(Containers) Then
+			Containers := New ArrayList.Create;
+		End If;
+		CurrentContainers := Containers;
+		CurrentContainerIndex := 0;
+		CurrentContainer := Null;
+		If Containers.Count = 0 Then
+			ChainNameEditBox.Text := "";
+			TaskListFilter := "";
+			RefillTaskList;                            // покажет «Контейнеры задач не выбраны»
+			Debug.WriteLine("Планировщик: набор контейнеров пуст");
+			Return;
+		End If;
+		CurrentContainer := Containers.Item(0) As IMetabaseObjectDescriptor;
+		Text := ContainersText(Containers);
+		If Containers.Count > 1 Then
+			Text := "(" + Containers.Count.ToString + ") " + Text;
+		End If;
+		ChainNameEditBox.Text := Text;
+
+		// задачи всех контейнеров: заодно проверяем, что контейнеры читаются (O(1) по каждому)
+		Tasks := CollectTasksFromContainers(Containers);
+
+		// Список контейнера (Root — только ОДИН контейнер) держим запасным путём, а показываем
+		// ОБЪЕДИНЁННЫЙ список задач по всем выбранным контейнерам (RefillTaskList, фильтр — все).
+		If Not IsNull(MetabaseListView2) Then
+			MetabaseListView2.Root := CurrentContainer;
+		End If;
+		TaskListFilter := "";
+		RefillTaskList;
+
+		// Ответственные: индекс читаем один раз на выбор; подпись обновляется по клику в списке
+		RespIndex_ := LoadResponsibleIndex(RESP_TABLE_ID);
+		Label1.Text := "выберите задачу в списке";   // подпись «Ответственный (по задаче):» — статичный Label
+		Debug.WriteLine("Планировщик: контейнеров — " + Containers.Count.ToString
+			+ ", задач всего — " + Tasks.Count.ToString + " (" + Text + ")");
+	End Sub FillTasksFromContainers;
+
+	// Переключить ФИЛЬТР объединённого списка задач: «все контейнеры» → по одному контейнеру → снова все.
+	// Сам план и анализ всегда строятся по ВСЕМ выбранным контейнерам — фильтр касается только показа.
+	Sub NextTaskListFilter;
+	Var
+		NextId: String;
+		Pos, I: Integer;
+	Begin
+		If IsNull(CurrentContainers) Or (CurrentContainers.Count = 0) Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		NextId := "";
+		If TaskListFilter = "" Then
+			NextId := (CurrentContainers.Item(0) As IMetabaseObjectDescriptor).Id;
+		Else
+			Pos := -1;
+			For I := 0 To CurrentContainers.Count - 1 Do
+				If (CurrentContainers.Item(I) As IMetabaseObjectDescriptor).Id = TaskListFilter Then
+					Pos := I;
+				End If;
+			End For;
+			If (Pos >= 0) And (Pos + 1 <= CurrentContainers.Count - 1) Then
+				NextId := (CurrentContainers.Item(Pos + 1) As IMetabaseObjectDescriptor).Id;
+			End If;
+		End If;
+		TaskListFilter := NextId;
+		RefillTaskList;
+	End Sub NextTaskListFilter;
+
+	// Текст текущего фильтра объединённого списка (для статуса и подписи пункта меню)
+	Function TaskListFilterText: String;
+	Begin
+		If TaskListFilter = "" Then
+			Return "все контейнеры";
+		End If;
+		Return TaskListFilter;
+	End Function TaskListFilterText;
+
+	// Заполнить ОБЪЕДИНЁННЫЙ список задач по всем выбранным контейнерам (с учётом фильтра).
+	// ⚠ MetabaseListView.Root принимает только ОДИН контейнер, поэтому строки набираем сами, а
+	// соответствие «строка ↔ задача» держим в TaskRows (по индексу строки). Если заполнение не
+	// удалось — показываем штатный список контейнера (MetabaseListView2) и пишем причину в Debug.
+	Sub RefillTaskList;
+	Var
+		Refs: ArrayList;
+		Ref: CTaskRef;
+		Item: IListViewItem;
+		Task: IScheduledTask;
+		StateText: String;
+		I, Shown, Cnt: Integer;
+	Begin
+		TaskRows := New ArrayList.Create;
+		If IsNull(TaskListMerged) Then
+			Return;                                  // объединённого списка нет — работает список контейнера
+		End If;
+		Cnt := ContainersCount(CurrentContainers);
+		// Ничего не выбрано: пустой список + подсказка, как набрать контейнеры из разных папок
+		If Cnt = 0 Then
+			TaskListMerged.Visible := False;
+			If Not IsNull(MetabaseListView2) Then
+				MetabaseListView2.Visible := True;
+				Try
+					MetabaseListView2.Root := Null;        // список пуст: контейнеры не выбраны
+				Except On e: Exception Do
+					Debug.WriteLine("Планировщик: сброс Root списка задач — " + e.Message);
+				End Try;
+			End If;
+			SetMemoLines(UnavailSummaryMemo, "Контейнеры задач не выбраны."
+				+ UNAVAIL_CRLF + "«Выбрать контейнеры…» — набор целиком, «Ещё ▾ → Добавить контейнеры…» — "
+				+ "добавить ещё (в т. ч. из другой папки: в диалоге выделение «слетает» при смене папки).");
+			Debug.WriteLine("Планировщик: список задач — контейнеры не выбраны");
+			Return;
+		End If;
+		// ОДИН контейнер: показываем штатный список компонента (`MetabaseListView.Root`) — у него своя
+		// реакция на ДВОЙНОЙ КЛИК (открытие задачи) и системное меню элементов. Объединённый список
+		// нужен там, где `Root` не справляется — при ДВУХ и более контейнерах.
+		If Cnt = 1 Then
+			If Not IsNull(MetabaseListView2) Then
+				TaskListMerged.Visible := False;
+				MetabaseListView2.Visible := True;
+				MetabaseListView2.Root := CurrentContainer;    // на случай смены выбора
+				SetMemoLines(UnavailSummaryMemo, "Список задач: контейнер «"
+					+ ContainersText(CurrentContainers) + "» (штатный список: двойной клик по задаче — открыть)."
+					+ UNAVAIL_CRLF + "План переноса и анализ строятся по всем выбранным контейнерам.");
+				Debug.WriteLine("Планировщик: список задач — штатный список контейнера (контейнеров "
+					+ Cnt.ToString + ")");
+				Return;
+			End If;
+		End If;
+		Refs := CollectTaskRefs(CurrentContainers);
+		Shown := 0;
+		Try
+			TaskListMerged.Items.BeginUpdate;
+			TaskListMerged.Items.Clear;
+			For I := 0 To Refs.Count - 1 Do
+				Ref := Refs.Item(I) As CTaskRef;
+				If (TaskListFilter = "") Or (Ref.ContainerId = TaskListFilter) Then
+					StateText := "";
+					Task := BindScheduledTask(Ref.Descriptor);
+					If Not IsNull(Task) Then
+						StateText := GetTaskStateText(Task.State);
+					End If;
+					TaskListMerged.Items.Add(Ref.TaskId);
+					Item := TaskListMerged.Items.Item(TaskListMerged.Items.Count - 1);
+					Item.ColumnText(1) := Ref.ContainerId;
+					Item.ColumnText(2) := Ref.Name;
+					Item.ColumnText(3) := StateText;
+					TaskRows.Add(Ref);               // порядок строк и TaskRows совпадает
+					Shown := Shown + 1;
+				End If;
+			End For;
+			TaskListMerged.Items.EndUpdate;
+			TaskListMerged.Visible := True;
+			If Not IsNull(MetabaseListView2) Then
+				MetabaseListView2.Visible := False;       // показываем объединённый список
+			End If;
+			SetMemoLines(UnavailSummaryMemo, "Список задач (объединённый): контейнеров "
+				+ Cnt.ToString + " — " + ContainersText(CurrentContainers)
+				+ "; фильтр «" + TaskListFilterText + "»; строк " + Shown.ToString + "."
+				+ UNAVAIL_CRLF + "План переноса и анализ строятся по ВСЕМ выбранным контейнерам.");
+			Debug.WriteLine("Планировщик: объединённый список задач — строк " + Shown.ToString
+				+ " из " + Refs.Count.ToString + ", фильтр «" + TaskListFilterText + "»");
+		Except On e: Exception Do
+			// Объединённый список не заполнился — возвращаемся к списку контейнера (Root := первый)
+			Debug.WriteLine("Планировщик: объединённый список задач не заполнился — " + e.Message
+				+ "; показываем задачи первого контейнера");
+			TaskRows := New ArrayList.Create;
+			TaskListMerged.Visible := False;
+			If Not IsNull(MetabaseListView2) Then
+				MetabaseListView2.Visible := True;
+			End If;
+			SetMemoLines(UnavailSummaryMemo, "Список задач: задачи контейнера «"
+				+ ContainersText(CurrentContainers) + "» (объединённый список недоступен: "
+				+ e.Message + ").");
+		End Try;
+	End Sub RefillTaskList;
+
+	// Задача, соответствующая строке ОБЪЕДИНЁННОГО списка (Null — не определили).
+	// Index строки берём у SelectedItem/FocusedItem (привод к IMetabaseListViewItem не нужен).
+	Function TaskRowDescriptor(List: ListView): IMetabaseObjectDescriptor;
+	Var
+		Item: IListViewItem;
+		Index: Integer;
+	Begin
+		If IsNull(List) Or IsNull(TaskRows) Then
+			Return Null;
+		End If;
+		Item := List.SelectedItem;
+		If IsNull(Item) Then
+			Item := List.FocusedItem;                // клик мог ещё не изменить SelectedItem
+		End If;
+		If IsNull(Item) Then
+			Return Null;
+		End If;
+		Index := Item.Index;
+		If (Index < 0) Or (Index >= TaskRows.Count) Then
+			Return Null;
+		End If;
+		Return (TaskRows.Item(Index) As CTaskRef).Descriptor;
+	End Function TaskRowDescriptor;
+
+	// Задача, выбранная в списке задач: сначала объединённый список (TaskRows), затем список контейнера
+	Function SelectedTaskDescriptor: IMetabaseObjectDescriptor;
+	Var
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		Desc := Null;
+		If Not IsNull(TaskListMerged) And TaskListMerged.Visible Then
+			Desc := TaskRowDescriptor(TaskListMerged);
+		End If;
+		If IsNull(Desc) Then
+			Desc := SelectedObjectDescriptor(MetabaseListView2);
+		End If;
+		Return Desc;
+	End Function SelectedTaskDescriptor;
+
+	// Клик по строке ОБЪЕДИНЁННОГО списка задач → карточка задачи (та же, что и у списка контейнера)
+	Sub TaskListMergedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		List: ListView;
+	Begin
+		List := Null;
+		Try
+			List := Sender As ListView;
+		Except On e: Exception Do
+			List := Null;
+		End Try;
+		If IsNull(List) Then
+			List := TaskListMerged;
+		End If;
+		ShowTaskCard(TaskRowDescriptor(List));
+	End Sub TaskListMergedOnClick;
+
+	// Колонки объединённого списка задач (обычный ListView — строки заполняем сами):
+	// «Задача | Контейнер | Название | Состояние». Набор пересоздаём, если он не тот (4 колонки).
+	Sub SetupMergedTaskList(LV: ListView);
+	Var
+		Col: IListViewColumn;
+	Begin
+		Try
+			LV.Style := ListViewStyle.Report;
+			LV.GridLines := True;
+			LV.RowSelect := True;
+			LV.ShowColumnHeaders := True;
+			LV.ReadOnly := True;
+			If LV.Columns.Count <> 4 Then
+				LV.Columns.Clear;
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Задача", 240, False, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Контейнер", 150, False, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Название", 200, True, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Состояние", 130, False, TextAlignment.Left);
+			Else
+				SetColumnsAutoSize(LV.Columns);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: колонки объединённого списка задач — " + e.Message);
+		End Try;
+	End Sub SetupMergedTaskList;
+
+	Sub MetabaseListView2OnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		List: MetabaseListView;
+		Stage: String;
+	Begin
+		// 1) Компонент-источник события. Привод «Sender As <компонент>» берём в Try: если он не
+		//    сработает, обработчик просто ничего не сделает (форма останется открытой), а в журнале
+		//    появится строка. Запасной путь — поле самой формы (обработчик привязан к этому списку).
+		Stage := "получение списка (Sender)";
+		List := Null;
+		Try
+			List := Sender As MetabaseListView;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: Sender как MetabaseListView не получен — " + e.Message);
+			List := Null;
+		End Try;
+		If IsNull(List) Then
+			List := MetabaseListView2;
+		End If;
+		If IsNull(List) Then
+			Debug.WriteLine("Планировщик: список задач недоступен (ни Sender, ни MetabaseListView2)");
+			Return;
+		End If;
+
+		// 2) Карточка задачи. ВАЖНО: необработанное исключение внутри обработчика события модальной
+		//    формы прерывает модальный цикл — окно закрывается (симптом «кликнул по задаче — форма
+		//    исчезла»). Поэтому вызов карточки идёт «по шагам» в Try: сбой логируется и попадает
+		//    в статусную метку, а форма остаётся открытой.
+		//    ⚠ Привод «SelectedItem As IMetabaseListViewItem» на стенде НЕ работает: описание объекта
+		//    берём документированным способом — SelectedObjects (TaskContainerLib).
+		Stage := "описание объекта (SelectedObjects)";
+		Try
+			ShowTaskCard(SelectedObjectDescriptor(List));
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: список задач — сбой на шаге «" + Stage + "»: " + e.Message);
+			ChainStatusTextLabel.Text := "сбой на шаге «" + Stage + "»: " + e.Message;
+		End Try;
+	End Sub MetabaseListView2OnClick;
+
+	// Карточка задачи по её описанию — общая для объединённого списка и списка контейнера.
+	// ВАЖНО: необработанное исключение внутри обработчика события модальной формы прерывает
+	// модальный цикл — окно закрывается (симптом «кликнул по задаче — форма исчезла»). Поэтому всё
+	// чтение идёт «по шагам» в одном Try: сбой логируется и попадает в статусную метку, а форма
+	// остаётся открытой.
+	Sub ShowTaskCard(TaskDesc: IMetabaseObjectDescriptor);
+	Var
+		Task: IScheduledTask;
+		Props: IScheduledTaskProperties;
+		Stage: String;
+	Begin
+		Stage := "описание объекта";
+		Task := Null;
+		Try
+			If Not IsNull(TaskDesc) Then
+				Stage := "имя задачи";
+				ChainNameEditBox.Text := TaskDesc.Id;
+				SelectedTaskId_ := TaskDesc.Id;      // запоминаем выбор — его используют «Ответственный…» и меню
+
+				Stage := "открытие задачи (Bind)";
+				Task := BindScheduledTask(TaskDesc);
+
+				If IsNull(Task) Then
+					Stage := "Bind вернул пусто";
+					ChainStatusTextLabel.Text := "задача не открылась (Bind)";
+				Else
+					Stage := "свойства задачи";
+					Props := Task.Properties;
+					If IsNull(Props) Then
+						ResponsiblePersonLabel.Text := "";
+						NextStartTextLabel.Text := "—";
+					Else
+						Stage := "ответственный (UserTag)";
+						ResponsiblePersonLabel.Text := Props.UserTag;
+						Stage := "расписание (Period)";
+						NextStartTextLabel.Text := GetTaskPeriodText(Props);
+					End If;
+
+					Stage := "состояние задачи";
+					ChainStatusTextLabel.Text := GetTaskStateText(Task.State);
+					Stage := "последний успешный запуск";
+					LastSuccesfullStartTextLabel.Text := GetLastSucceededText(Task);
+					Stage := "средняя длительность";
+					LabelAvgTimeVal.Text := GetAverageDurationText(Task);
+				End If;
+
+				// Ответственный по задаче — из таблицы RESPONSIBLE_FOR_TASK (а не из свойств задачи)
+				Stage := "ответственный по задаче (таблица)";
+				ShowTaskResponsible(TaskDesc.Id);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: карточка задачи — сбой на шаге «" + Stage + "»: " + e.Message);
+			ChainStatusTextLabel.Text := "сбой на шаге «" + Stage + "»: " + e.Message;
+		End Try;
+	End Sub ShowTaskCard;
+
+	// Id задачи, выбранной в списке (пусто — ничего не выбрано)
+	Function SelectedTaskId: String;
+	Var
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		// 1) задача, запомненная при клике по строке списка (самый надёжный путь), 2) выделение «на месте»
+		If SelectedTaskId_ <> "" Then
+			Return SelectedTaskId_;
+		End If;
+		Desc := Null;
+		// выделение «на месте»: сначала объединённый список задач, затем штатный список контейнера
+		Desc := SelectedTaskDescriptor;
+		If IsNull(Desc) Then
+			Return "";
+		End If;
+		Return Desc.Id;
+	End Function SelectedTaskId;
+
+	// Значение строки «Ответственный (по задаче):» в карточке (подпись — статичный Label LblCapRespTask):
+	// данные берём из таблицы RESPONSIBLE_FOR_TASK (индекс RespIndex_ читается на контейнер).
+	Sub ShowTaskResponsible(TaskId: String);
+	Var
+		Row: CTaskResponsible;
+	Begin
+		Try
+			Row := Null;
+			If (Not IsNull(RespIndex_)) And (TaskId <> "") Then
+				Row := FindTaskResponsibleInIndex(RespIndex_, TaskId);
+			End If;
+			If IsNull(Row) Then
+				Label1.Text := "— (не задан)";
+			Else
+				// показываем и почту: она подставляется при выборе ранее использованного ответственного
+				Label1.Text := Row.ResponsibleUser;
+				If String.Trim(Row.Mail) <> "" Then
+					Label1.Text := Label1.Text + " (" + String.Trim(Row.Mail) + ")";
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: ответственный по задаче — " + e.Message);
+		End Try;
+		// Меню «Ранее использованные ответственные» наполняем заранее (кнопка показывает его сама)
+		RespMenuBuild;
+	End Sub ShowTaskResponsible;
+
+	// Подпись пункта меню «ручной ввод» (одна и та же при построении меню и при выборе)
+	Function ManualRespCaption: String;
+	Begin
+		Return "Ввести вручную…";
+	End Function ManualRespCaption;
+
+	// Запись ответственного по задаче (пусто — снять): БП задачи → SaveTaskResponsible →
+	// перечитать индекс и подпись. True — успех. Ошибки наружу не выпускаются.
+	Function ApplyResponsible(TaskId: String; NewResp: String): Boolean;
+	Var
+		BaName, Mail: String;
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		If TaskId = "" Then
+			Return False;
+		End If;
+		BaName := "";
+		Try
+			Desc := MetabaseClass.Active.ItemById(TaskId);
+			If Not IsNull(Desc) Then
+				BaName := GetTaskBusinessAppName(Desc);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: бизнес-приложение задачи «" + TaskId + "» — " + e.Message);
+		End Try;
+		// Почту подставляем по ФИО: у ранее использованного ответственного адрес уже есть в таблице.
+		// (Раньше здесь передавался Null — «сохранить прежнюю почту», и у нового ответственного
+		//  адрес оставался пустым, поэтому уведомления ему не уходили.)
+		Mail := LoadResponsibleMail(RESP_TABLE_ID, NewResp);
+		If SaveTaskResponsible(RESP_TABLE_ID, RESP_FIELD_TASK, RESP_FIELD_BA, RESP_FIELD_RESPONSIBLE,
+			RESP_FIELD_MAIL, TaskId, BaName, String.Trim(NewResp), Mail) Then
+			RespIndex_ := LoadResponsibleIndex(RESP_TABLE_ID);       // перечитать индекс
+			ShowTaskResponsible(TaskId);
+			Return True;
+		End If;
+		Return False;
+	End Function ApplyResponsible;
+
+	// Форма ведения ответственного (ФИО + почта): Fore/ResponsibleForm.fore, класс RESPONSIBLEForm.
+	// Задача передаётся документированным способом — командой формы:
+	//   SendCommand("EditResponsible", TaskId)  →  ResponsibleFormOnCommand (Args.Command / Args.Argument).
+	Sub OpenResponsibleForm(TaskId: String);
+	Var
+		EditForm: RESPONSIBLEForm;
+		Sent: Variant;
+	Begin
+		If TaskId = "" Then
+			WinApplication.InformationBox("Выберите задачу в списке");
+			Return;
+		End If;
+		Try
+			EditForm := New RESPONSIBLEForm.CreateForm(Self As IWin32Window);
+			Sent := EditForm.SendCommand("EditResponsible", TaskId);   // SendCommand(Command; Argument): Variant
+			Debug.WriteLine("Планировщик: форма ответственного, команда — " + UnvVarToStr(Sent));
+			EditForm.ShowModal;                                        // закрывается крестиком окна
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: форма ответственного — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть форму ответственного: " + e.Message);
+		End Try;
+		RespIndex_ := LoadResponsibleIndex(RESP_TABLE_ID);             // после закрытия — перечитать
+		ShowTaskResponsible(TaskId);
+	End Sub OpenResponsibleForm;
+
+	// «Изменить ответственного» — форма ведения ответственного УЖЕ для выбранной задачи: Id берём из
+	// выделенной строки списка (MetabaseListView2, запоминается при клике), поэтому в окне сразу
+	// подставляются ФИО и почта из RESPONSIBLE_FOR_TASK, а не пустые поля.
+	Sub EditResponsibleOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		TaskId: String;
+	Begin
+		TaskId := SelectedTaskId;
+		If TaskId = "" Then
+			WinApplication.InformationBox("Сначала выберите задачу в списке задач");
+			Return;
+		End If;
+		Debug.WriteLine("Планировщик: «Изменить ответственного» — задача " + TaskId);
+		OpenResponsibleForm(TaskId);
+	End Sub EditResponsibleOnClick;
+
+	// Пункты меню строятся ПЕРЕД показом (вызывается из ShowTaskResponsible и при создании формы):
+	// ранее использованные
+	// ответственные из таблицы (по алфавиту) + пункт «Ввести вручную…». Если задача не выбрана — подсказка.
+	Sub RespMenuBuild;
+	Var
+		Names: ArrayList;
+		Item: MenuItem;
+		TaskId: String;
+		I: Integer;
+	Begin
+		Try
+			If Not IsNull(RespPopupMenu) Then
+				RespPopupMenu.Items.Clear;
+				TaskId := SelectedTaskId;
+				Names := LoadResponsibleNames(RESP_TABLE_ID);
+				If TaskId = "" Then
+					Item := New MenuItem.Create;
+					Item.Text := "Сначала выберите задачу в списке";
+					Item.Enabled := False;
+					RespPopupMenu.Items.Add(Item);
+				Else
+					If Names.Count = 0 Then
+						Item := New MenuItem.Create;
+						Item.Text := "Ранее ответственные не задавались";
+						Item.Enabled := False;
+						RespPopupMenu.Items.Add(Item);
+					Else
+						For I := 0 To Names.Count - 1 Do
+							Item := New MenuItem.Create;
+							Item.Text := Names.Item(I) As String;
+							Item.OnClick := RespMenuPickOnClick;
+							RespPopupMenu.Items.Add(Item);
+						End For;
+					End If;
+					// последний пункт — ручной ввод (откроется форма ведения ответственного)
+					Item := New MenuItem.Create;
+					Item.Text := ManualRespCaption;
+					Item.OnClick := RespMenuPickOnClick;
+					RespPopupMenu.Items.Add(Item);
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: построение меню ответственных — " + e.Message);
+		End Try;
+	End Sub RespMenuBuild;
+
+	// Выпадающий список ответственных: MenuButton (свойство Menu = RespPopupMenu).
+	// Меню наполняется ЗАРАНЕЕ (MenuButton показывает его сам), поэтому пункты обновляем при выборе
+	// задачи и после любой записи ответственного — см. ShowTaskResponsible / RespMenuBuild.
+	// Страховка: если кнопка по каким-то причинам не всплывает меню сама — показываем из обработчика.
+	Sub RespMenuButtonOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		RespMenuBuild;
+		MenuShow(Sender, Args, RespPopupMenu);
+	End Sub RespMenuButtonOnClick;
+
+	// Выбран пункт меню: имя ответственного (сразу пишем в таблицу) либо «Ввести вручную…»
+	// (открывается форма ведения ответственного — ФИО + почта).
+	Sub RespMenuPickOnClick(Sender: Object; Args: IEventArgs);
+	Var
+		Item: MenuItem;
+		TaskId, Picked: String;
+	Begin
+		Item := Null;
+		Try
+			Item := Sender As MenuItem;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: пункт меню ответственных — " + e.Message);
+			Item := Null;
+		End Try;
+		If IsNull(Item) Then
+			Return;
+		End If;
+		Picked := String.Trim(Item.Text);
+		If Picked = ManualRespCaption Then
+			// ручной ввод — открываем форму ведения ответственного (ФИО + почта)
+			OpenResponsibleForm(SelectedTaskId);
+		Else
+			TaskId := SelectedTaskId;
+			If TaskId = "" Then
+				WinApplication.InformationBox("Выберите задачу в списке");
+			Else
+				Try
+					If ApplyResponsible(TaskId, Picked) Then
+						WinApplication.InformationBox("Ответственный для «" + TaskId + "»: " + Picked);
+					Else
+						WinApplication.InformationBox("Не удалось сохранить ответственного (таблица "
+							+ RESP_TABLE_ID + " недоступна или нет прав на запись)");
+					End If;
+				Except On e: Exception Do
+					Debug.WriteLine("Планировщик: запись ответственного из меню — " + e.Message);
+					WinApplication.InformationBox("Ошибка записи ответственного: " + e.Message);
+				End Try;
+			End If;
+		End If;
+	End Sub RespMenuPickOnClick;
+
+	Sub AnalyseButtonOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		If IsNull(CurrentContainers) Or (CurrentContainers.Count = 0) Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		// Анализ раскладки ВСЕХ выбранных контейнеров — ТАБЛИЦЕЙ (грид с заголовками) в окне PLANTEXTForm
+		ShowPlanAnalysis(CurrentContainers);
+	End Sub AnalyseButtonOnClick;
+
+	Sub ApplyPlanOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Applied: Integer;
+	Begin
+		If IsNull(CurrentContainers) Or (CurrentContainers.Count = 0) Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		Applied := PlanAndApply(CurrentContainers);
+		FillTasksFromContainers(CurrentContainers);
+		WinApplication.InformationBox("Расписание применено (контейнеров: "
+			+ CurrentContainers.Count.ToString + "). Задач: " + Applied.ToString);
+	End Sub ApplyPlanOnClick;
+
+	// Открыть задачу как объект репозитория — то же действие, что даёт ДВОЙНОЙ КЛИК в MetabaseListView
+	// (и пункт меню «Редактировать задачу»). Описание берётся из SelectedTaskDescriptor.
+	Sub OpenTaskObject(TaskDesc: IMetabaseObjectDescriptor);
+	Var
+		CommandTarget: IUiCommandTarget;
+	Begin
+		If IsNull(TaskDesc) Then
+			Return;
+		End If;
+		Try
+			CommandTarget := WinApplication.Instance.GetObjectTarget(TaskDesc);
+			CommandTarget.Execute("Object.Edit", Null);
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: не удалось открыть задачу «" + TaskDesc.Id + "» — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть задачу «" + TaskDesc.Id + "»: " + e.Message);
+		End Try;
+	End Sub OpenTaskObject;
+
+	Sub EditButtonOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		OpenTaskObject(SelectedTaskDescriptor);   // объединённый список задач или список контейнера
+	End Sub EditButtonOnClick;
+
+	// ДВОЙНОЙ КЛИК по строке ОБЪЕДИНЁННОГО списка — открыть задачу (как в списке контейнера).
+	// В MetabaseListView это делает сам компонент; у своего ListView поведение задаём кодом — чтобы
+	// функционал сохранился и при работе с несколькими контейнерами.
+	Sub TaskListMergedOnDblClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		List: ListView;
+	Begin
+		List := Null;
+		Try
+			List := Sender As ListView;
+		Except On e: Exception Do
+			List := Null;
+		End Try;
+		If IsNull(List) Then
+			List := TaskListMerged;
+		End If;
+		OpenTaskObject(TaskRowDescriptor(List));
+	End Sub TaskListMergedOnDblClick;
+
+	// === Меню формы («разгрузка»: вместо 28 кнопок — 8 меню) ===
+	// Компонента MenuButton в сборке Forms нет, поэтому меню — это обычная Button + компонент PopupMenu:
+	// по щелчку строим пункты и показываем меню методом IPopupMenu.Popup. Пункт несёт код действия
+	// (Item.Data), а обработчик — MenuActionOnClick. Обработчики-кнопки вызываются с (Null, Null):
+	// они не используют Sender/Args (проверено), поэтому логика переиспользуется без дублирования.
+	Sub EnsureMenus;
+	Begin
+		Try
+			If IsNull(MenuMore) Then
+				MenuMore := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuUnavail) Then
+				MenuUnavail := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuMark) Then
+				MenuMark := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuDecision) Then
+				MenuDecision := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuPlan) Then
+				MenuPlan := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuExport) Then
+				MenuExport := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuNotify) Then
+				MenuNotify := New PopupMenu.Create;
+			End If;
+			If IsNull(MenuService) Then
+				MenuService := New PopupMenu.Create;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: компоненты меню — " + e.Message);
+		End Try;
+	End Sub EnsureMenus;
+
+	// Пункт меню: подпись + код действия (передаётся в общий MenuActionOnClick)
+	Function MenuItemNew(Caption, ActionCode: String; Enabled: Boolean): MenuItem;
+	Var
+		It: MenuItem;
+	Begin
+		It := New MenuItem.Create;
+		It.Text := Caption;
+		It.Data := ActionCode;
+		It.Enabled := Enabled;
+		If ActionCode <> "" Then
+			It.OnClick := MenuActionOnClick;
+		End If;
+		Return It;
+	End Function MenuItemNew;
+
+	Sub MenuShow(Sender: Object; Args: IMouseEventArgs; M: PopupMenu);
+	Begin
+		If IsNull(M) Then
+			Return;
+		End If;
+		Try
+			M.Popup(self, self.Left + (sender As icontrol).Left + args.pPoint.X, self.Top + (sender As icontrol).Top + args.pPoint.Y); // показ у курсора мыши (IPopupMenu.Popup)
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: показ меню — " + e.Message);
+			WinApplication.InformationBox("Не удалось показать меню: " + e.Message);
+		End Try;
+	End Sub MenuShow;
+
+	// --- Наполнение меню (строится перед показом: содержимое всегда актуально) ---
+	Sub MenuMoreBuild;
+	Var
+		HasTask: Boolean;
+		Cid: String;
+		I: Integer;
+	Begin
+		If IsNull(MenuMore) Then
+			Return;
+		End If;
+		HasTask := SelectedTaskId <> "";
+		MenuMore.Items.Clear;
+		MenuMore.Items.Add(MenuItemNew("Редактировать задачу", "task_edit", HasTask));
+		MenuMore.Items.Add(MenuItemNew("Ответственный… (ФИО и почта)", "resp_edit", HasTask));
+		MenuMore.Items.Add(MenuItemNew("Снять ответственного", "resp_clear", HasTask));
+		// Список задач: объединённый по всем выбранным контейнерам — фильтр переключается по кругу
+		MenuMore.Items.Add(MenuItemNew("Список задач: фильтр «" + TaskListFilterText + "» → следующий",
+			"task_filter_next", (Not IsNull(CurrentContainers)) And (CurrentContainers.Count > 0)));
+		// Контейнеры: диалог репозитория «теряет» выделение при переходе по папкам, поэтому набор
+		// НАБИРАЕТСЯ за несколько заходов — «Добавить контейнеры…», а также убрать/очистить.
+		MenuMore.Items.Add(MenuItemNew("Добавить контейнеры… (из другой папки)", "cont_add", True));
+		If (Not IsNull(CurrentContainers)) And (CurrentContainers.Count > 0) Then
+			For I := 0 To CurrentContainers.Count - 1 Do
+				Cid := (CurrentContainers.Item(I) As IMetabaseObjectDescriptor).Id;
+				MenuMore.Items.Add(MenuItemNew("Убрать контейнер «" + Cid + "»", "cont_remove;" + Cid, True));
+			End For;
+			MenuMore.Items.Add(MenuItemNew("Очистить выбор контейнеров", "cont_clear", True));
+		End If;
+	End Sub MenuMoreBuild;
+
+	Sub MenuUnavailBuild;
+	Begin
+		If IsNull(MenuUnavail) Then
+			Return;
+		End If;
+		MenuUnavail.Items.Clear;
+		MenuUnavail.Items.Add(MenuItemNew("Ведение недоступностей…", "rec_open", True));
+		MenuUnavail.Items.Add(MenuItemNew("Обновить список периодов", "rec_refresh", True));
+		MenuUnavail.Items.Add(MenuItemNew("Взять период из записи", "period_take", True));
+		MenuUnavail.Items.Add(MenuItemNew("Ручной ввод периода", "period_manual", True));
+	End Sub MenuUnavailBuild;
+
+	Sub MenuMarkBuild;
+	Begin
+		If IsNull(MenuMark) Then
+			Return;
+		End If;
+		MenuMark.Items.Clear;
+		MenuMark.Items.Add(MenuItemNew("Обрабатывать все", "mark_all", Not IsNull(UnavailImpacts)));
+		MenuMark.Items.Add(MenuItemNew("Не обрабатывать все", "mark_none", Not IsNull(UnavailImpacts)));
+	End Sub MenuMarkBuild;
+
+	Sub MenuDecisionBuild;
+	Begin
+		If IsNull(MenuDecision) Then
+			Return;
+		End If;
+		MenuDecision.Items.Clear;
+		MenuDecision.Items.Add(MenuItemNew("Не запускать (все обрабатываемые)", "skip_checked", Not IsNull(UnavailImpacts)));
+		MenuDecision.Items.Add(MenuItemNew("Перепланировать (все обрабатываемые)", "resched_checked", Not IsNull(UnavailImpacts)));
+		MenuDecision.Items.Add(MenuItemNew("Не запускать (выбранная строка)", "skip_selected", Not IsNull(UnavailImpacts)));
+		MenuDecision.Items.Add(MenuItemNew("Перепланировать (выбранная строка)", "resched_selected", Not IsNull(UnavailImpacts)));
+		MenuDecision.Items.Add(MenuItemNew("Пересчитать план… (начало, слои, окончание)", "recalc_plan", Not IsNull(UnavailImpacts)));
+		MenuDecision.Items.Add(MenuItemNew("Время запуска правится в колонке «Дата нового запуска»", "", False));
+	End Sub MenuDecisionBuild;
+
+	Sub MenuPlanBuild;
+	Begin
+		If IsNull(MenuPlan) Then
+			Return;
+		End If;
+		MenuPlan.Items.Clear;
+		MenuPlan.Items.Add(MenuItemNew("Сохранить в таблицу", "plan_save_table", Not IsNull(UnavailImpacts)));
+		MenuPlan.Items.Add(MenuItemNew("Загрузить из таблицы", "plan_load_table", UnavailSelectedKey <> 0));
+		MenuPlan.Items.Add(MenuItemNew("Показать сохранённый (сравнение)", "plan_show_stored", UnavailSelectedKey <> 0));
+		MenuPlan.Items.Add(MenuItemNew("Убрать план", "plan_delete", UnavailSelectedKey <> 0));
+		MenuPlan.Items.Add(MenuItemNew("Применить план без простоя", "plan_safe", Not IsNull(UnavailImpacts)));
+	End Sub MenuPlanBuild;
+
+	Sub MenuExportBuild;
+	Begin
+		If IsNull(MenuExport) Then
+			Return;
+		End If;
+		MenuExport.Items.Clear;
+		MenuExport.Items.Add(MenuItemNew("План «текстом» в окне (копирование)", "copy_text", True));
+	End Sub MenuExportBuild;
+
+	Sub MenuNotifyBuild;
+	Begin
+		If IsNull(MenuNotify) Then
+			Return;
+		End If;
+		MenuNotify.Items.Clear;
+		MenuNotify.Items.Add(MenuItemNew("Разослать уведомления ответственным", "notify_resp",
+			(UnavailSelectedKey <> 0) And (Not IsNull(UnavailImpacts))));
+		MenuNotify.Items.Add(MenuItemNew("Письма ответственным (сводные, файлы + почта)", "notify_smtp", UnavailSelectedKey <> 0));
+	End Sub MenuNotifyBuild;
+
+	Sub MenuServiceBuild;
+	Begin
+		If IsNull(MenuService) Then
+			Return;
+		End If;
+		MenuService.Items.Clear;
+		MenuService.Items.Add(MenuItemNew("Журнал действий", "log", True));
+		MenuService.Items.Add(MenuItemNew("Журнал выполненных запусков", "run_log", True));
+		MenuService.Items.Add(MenuItemNew("Что будет запущено (сухой прогон)", "dry_run", True));
+		MenuService.Items.Add(MenuItemNew("Монитор недоступности", "monitor", True));
+	End Sub MenuServiceBuild;
+
+	// Один обработчик на все пункты меню: код действия — в Item.Data
+	Sub MenuActionOnClick(Sender: Object; Args: IEventArgs);
+	Var
+		Item: MenuItem;
+		Code: String;
+	Begin
+		Item := Null;
+		Try
+			Item := Sender As MenuItem;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: пункт меню — " + e.Message);
+			Item := Null;
+		End Try;
+		If IsNull(Item) Then
+			Return;
+		End If;
+		Code := UnvVarToStr(Item.Data);
+		Try
+			MenuActionMain(Code);
+			MenuActionPlan(Code);
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: действие меню «" + Code + "» — " + e.Message);
+			WinApplication.InformationBox("Не удалось выполнить: " + e.Message);
+		End Try;
+	End Sub MenuActionOnClick;
+
+	// Действия «задача / ответственный / недоступности / отметки / решения»
+	Sub MenuActionMain(Code: String);
+	Begin
+		If Code = "task_edit" Then
+			EditButtonOnClick(Null, Null);
+		End If;
+		If Code = "resp_edit" Then
+			EditResponsibleOnClick(Null, Null);
+		End If;
+		If Code = "resp_clear" Then
+			ClearResponsibleOnClick;
+		End If;
+		If Code = "rec_open" Then
+			OpenRecordsWindowOnClick(Null, Null);
+		End If;
+		If Code = "rec_refresh" Then
+			RefreshUnavailPeriodsOnClick(Null, Null);
+		End If;
+		If Code = "period_take" Then
+			TakeUnavailPeriodOnClick(Null, Null);
+		End If;
+		If Code = "period_manual" Then
+			ManualPeriodOnClick(Null, Null);
+		End If;
+		If Code = "mark_all" Then
+			MarkAllAffectedOnClick(Null, Null);
+		End If;
+		If Code = "mark_none" Then
+			UnmarkAllAffectedOnClick(Null, Null);
+		End If;
+		If Code = "skip_checked" Then
+			SkipCheckedOnClick(Null, Null);
+		End If;
+		If Code = "resched_checked" Then
+			RescheduleCheckedOnClick(Null, Null);
+		End If;
+		If Code = "skip_selected" Then
+			SkipSelectedOnClick(Null, Null);
+		End If;
+		If Code = "resched_selected" Then
+			RescheduleSelectedOnClick(Null, Null);
+		End If;
+		If Code = "recalc_plan" Then
+			RecalcPlanOnClick(Null, Null);
+		End If;
+		If Code = "task_filter_next" Then
+			NextTaskListFilter;
+		End If;
+		If Code = "cont_add" Then
+			AddContainersOnClick(Null, Null);
+		End If;
+		If Code = "cont_clear" Then
+			ClearContainersOnClick;
+		End If;
+		If Code.Length > 12 Then
+			If Code.SubString(0, 12) = "cont_remove;" Then
+				RemoveContainerFromSet(Code.SubString(12, Code.Length - 12));
+			End If;
+		End If;
+	End Sub MenuActionMain;
+
+	// Действия «план / выгрузка / уведомления / сервис»
+	Sub MenuActionPlan(Code: String);
+	Begin
+		If Code = "plan_save_table" Then
+			SavePlanToTableOnClick(Null, Null);
+		End If;
+		If Code = "plan_load_table" Then
+			LoadPlanFromTableOnClick(Null, Null);
+		End If;
+		If Code = "plan_show_stored" Then
+			ShowStoredPlanOnClick(Null, Null);
+		End If;
+		If Code = "plan_delete" Then
+			DeletePlanOnClick(Null, Null);
+		End If;
+		If Code = "plan_safe" Then
+			ApplyPlanAvoidingOnClick(Null, Null);
+		End If;
+		If Code = "copy_text" Then
+			ShowPlanTextOnClick;
+		End If;
+		If Code = "notify_resp" Then
+			NotifyResponsiblesOnClick(Null, Null);
+		End If;
+		If Code = "notify_smtp" Then
+			NotifyOnClick(Null, Null);
+		End If;
+		If Code = "log" Then
+			ShowLogOnClick(Null, Null);
+		End If;
+		If Code = "run_log" Then
+			ShowRunLogOnClick(Null, Null);
+		End If;
+		If Code = "dry_run" Then
+			DryRunOnClick(Null, Null);
+		End If;
+		If Code = "monitor" Then
+			MonitorOnClick(Null, Null);
+		End If;
+	End Sub MenuActionPlan;
+
+	// Показ меню по щелчку кнопок-меню
+	Sub MenuMoreOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuMoreBuild;
+		MenuShow(Sender, args, MenuMore);
+	End Sub MenuMoreOnClick;
+
+	Sub MenuUnavailOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuUnavailBuild;
+		MenuShow(Sender, Args, MenuUnavail);
+	End Sub MenuUnavailOnClick;
+
+	Sub MenuMarkOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuMarkBuild;
+		MenuShow(Sender,Args, MenuMark);
+	End Sub MenuMarkOnClick;
+
+	Sub MenuDecisionOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuDecisionBuild;
+		MenuShow(Sender,Args, MenuDecision);
+	End Sub MenuDecisionOnClick;
+
+	Sub MenuPlanOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuPlanBuild;
+		MenuShow(Sender,Args, MenuPlan);
+	End Sub MenuPlanOnClick;
+
+	Sub MenuExportOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuExportBuild;
+		MenuShow(Sender,Args, MenuExport);
+	End Sub MenuExportOnClick;
+
+	Sub MenuNotifyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuNotifyBuild;
+		MenuShow(Sender,Args, MenuNotify);
+	End Sub MenuNotifyOnClick;
+
+	Sub MenuServiceOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		MenuServiceBuild;
+		MenuShow(Sender, Args, MenuService);
+	End Sub MenuServiceOnClick;
+
+	// Снять ответственного с выбранной задачи (пункт меню «Снять ответственного»)
+	Sub ClearResponsibleOnClick;
+	Var
+		TaskId: String;
+	Begin
+		TaskId := SelectedTaskId;
+		If TaskId = "" Then
+			WinApplication.InformationBox("Сначала выберите задачу в списке задач");
+			Return;
+		End If;
+		ApplyResponsible(TaskId, ""); // пустое ФИО — строка удаляется из RESPONSIBLE_FOR_TASK
+		RespIndex_ := LoadResponsibleIndex(RESP_TABLE_ID);
+		ShowTaskResponsible(TaskId);
+	End Sub ClearResponsibleOnClick;
+
+	// Показать многострочный текст (анализ раскладки / план «текстом») в отдельном окне PLANTEXTForm
+	Sub ShowPlanText(Caption, Text: String);
+	Var
+		F: PLANTEXTForm;
+	Begin
+		If Text = "" Then
+			WinApplication.InformationBox("Текст пуст — нечего показывать");
+			Return;
+		End If;
+		Try
+			F := New PLANTEXTForm.CreateForm(Self As IWin32Window);
+			F.SendCommand("SetCaption", Caption);
+			F.SendCommand("ShowText", Text);
+			F.ShowModal;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: окно текста плана — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть окно текста: " + e.Message);
+		End Try;
+	End Sub ShowPlanText;
+
+	// Анализ раскладки ВЫБРАННЫХ контейнеров — ТАБЛИЦЕЙ в окне PLANTEXTForm (грид с заголовками).
+	// Окну передаются Id контейнеров одной строкой («A;B;C»): саму таблицу оно строит вызовом
+	// BuildPlanInfosForContainers (TaskPlanner.fore), поэтому между формами не передаются объекты.
+	Sub ShowPlanAnalysis(Containers: ArrayList);
+	Var
+		F: PLANTEXTForm;
+	Begin
+		If IsNull(Containers) Or (Containers.Count = 0) Then
+			Return;
+		End If;
+		Try
+			F := New PLANTEXTForm.CreateForm(Self As IWin32Window);
+			F.SendCommand("SetCaption", "Анализ раскладки: контейнеров " + Containers.Count.ToString
+				+ " (" + ContainersText(Containers) + ")");
+			F.SendCommand("ShowAnalysis", ContainersIdsText(Containers));
+			F.ShowModal;                                        // закрывается крестиком окна
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: окно анализа раскладки — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть окно анализа раскладки: " + e.Message);
+		End Try;
+	End Sub ShowPlanAnalysis;
+
+	// «План «текстом» в окне» (меню «Выгрузка ▾»): текст строится по ВСЕМ выбранным контейнерам
+	Sub ShowPlanTextOnClick;
+	Begin
+		If IsNull(CurrentContainers) Or (CurrentContainers.Count = 0) Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		Try
+			ShowPlanText("План раскладки «текстом» (можно скопировать)", PlanText(CurrentContainers));
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: план текстом — " + e.Message);
+			WinApplication.InformationBox("Не удалось построить текст плана: " + e.Message);
+		End Try;
+	End Sub ShowPlanTextOnClick;
+
+	// Строка статуса блока «Затронутые задачи» (вместо многострочной сводки в Memo)
+	Sub UpdateStatusLine;
+	Var
+		Impact: CUnavailImpact;
+		Total, Skip, Resched, Processed, I: Integer;
+	Begin
+		If IsNull(LblStatus) Then
+			Return;
+		End If;
+		If IsNull(UnavailImpacts) Then
+			LblStatus.Text := "Список пересекающихся задач не построен";
+			Return;
+		End If;
+		Total := 0;
+		Skip := 0;
+		Resched := 0;
+		Processed := 0;
+		For I := 0 To UnavailImpacts.Count - 1 Do
+			Impact := UnavailImpacts.Item(I) As CUnavailImpact;
+			Total := Total + 1;
+			If ImpactProcessed(Impact) Then
+				Processed := Processed + 1;
+			End If;
+			If Impact.Decision = DECISION_SKIP Then
+				Skip := Skip + 1;
+			End If;
+			If Impact.Decision = DECISION_RESCHEDULE Then
+				Resched := Resched + 1;
+			End If;
+		End For;
+		LblStatus.Text := "Пересекается задач: " + Total.ToString
+			+ " (обрабатывать: " + Processed.ToString + " — перепланировать: " + Resched.ToString
+			+ ", не запускать: " + Skip.ToString + "; без обработки: " + (Total - Processed).ToString + ")";
+	End Sub UpdateStatusLine;
+
+	Sub PlannerPlace(C: IControl; L, T, W, H: Integer);
+	Begin
+		C.Left := Double.RoundInt(L * LayoutK);
+		C.Top := Double.RoundInt((T - LAYOUT_TOP_SHIFT) * LayoutK);   // компоновка поднята вверх
+		C.Width := Double.RoundInt(W * LayoutK);
+		C.Height := Double.RoundInt(H * LayoutK);
+	End Sub PlannerPlace;
+
+	Sub SetupPlannerLayout;
+	Var
+		Ctl: Button;
+		Gr: GroupBox;
+	Begin
+		Self.Width := Double.RoundInt((1780 + PANEL_X_SHIFT + PANEL_X_GROW) * LayoutK);
+		Self.Height := Double.RoundInt(1300 * LayoutK);
+
+		// Списки репозитория обязаны быть размещены на форме ЗАРАНЕЕ (динамически MetabaseListView
+		// не создаём — на стенде это приводило к падению приложения), поэтому работаем только
+		// с существующими контролами.
+		If Not IsNull(MetabaseListView2) Then
+			// Список задач — внутри рамки блока «Задачи контейнера» (GrpTasks: 26;354;756;282)
+			PlannerPlace(MetabaseListView2, 38, 376, 732, 560);   // список задач вырос: вместо сводки плана (PLANTEXTForm)
+
+			// Табличный вид списка задач: Style = Report — перечисление ListViewStyle
+			// (сборка Forms): Icon / SmallIcon / List / Report («таблица»).
+			MetabaseListView2.Style := ListViewStyle.Report;
+			MetabaseListView2.GridLines := True;
+			MetabaseListView2.RowSelect := True;
+			MetabaseListView2.ShowColumnHeaders := True;
+
+			// Колонки списка задач (IListViewColumns) + AutoSize и выравнивание
+			SetupTaskListColumns(MetabaseListView2);
+
+			// Клик по строке списка → карточка задачи. Обработчик привязываем КОДОМ (в дизайнере
+			// привязка не нужна): MetabaseListView2OnClick — существующий обработчик формы.
+			MetabaseListView2.OnClick := MetabaseListView2OnClick;
+		End If;
+
+		// ОБЪЕДИНЁННЫЙ список задач по нескольким контейнерам — на том же месте, что список контейнера
+		// (показывается, когда контейнеры выбраны; MetabaseListView2 остаётся запасным вариантом).
+		If Not IsNull(TaskListMerged) Then
+			PlannerPlace(TaskListMerged, 38, 376, 732, 560);
+			SetupMergedTaskList(TaskListMerged);
+			TaskListMerged.OnClick := TaskListMergedOnClick;   // клик по строке — карточка задачи
+			TaskListMerged.OnDblClick := TaskListMergedOnDblClick; // двойной клик — открыть задачу
+			TaskListMerged.Visible := False;
+		End If;
+		// Автомасштаб при изменении размеров окна (константа UI_AUTOSIZE_ON_RESIZE в TaskContainerLib):
+		// списку задач — тянуться по ширине, кнопкам действий — держаться за нижний край окна.
+		// ⚠ SetAutoSize вызывает только для СУЩЕСТВУЮЩИХ контролов: кнопки, заменённые меню
+		// (BtnEditTask и т. д.), из формы удалены — упоминание их имён не компилируется.
+		SetAutoSize(MetabaseListView2, True, False);
+		If Not IsNull(TaskListMerged) Then
+			SetAutoSize(TaskListMerged, True, False);
+		End If;
+		SetAutoSize(BtnAnalyse, False, True);
+		SetAutoSize(BtnApplyPlan, False, True);
+
+		// Рамки блоков левой колонки (создаёт фабрика по строкам GROUP в ScreenSpecText).
+		// У контролов внутри блока Anchors считаются от клиентской области группы, а не от окна.
+		AnchorGroup("GrpTaskCard", True, False);
+		AnchorGroup("GrpTasks", True, False);
+
+		// Кнопка с меню ответственных: MenuButton (Forms) — свойство Menu := PopupMenu.
+		// ⚠ Со стенда: кнопка НЕ нажималась, пока лежала на форме соседом рамки GROUP — в Fore
+		// надёжно работает только «ребёнок контейнера» (так сделаны остальные контролы блока
+		// и списки — см. PlaceInGroup). Поэтому кнопка делается ребёнком GrpTaskCard: рамка её
+		// не закрывает, и она едет вместе с блоком.
+		If (Not IsNull(RespMenuButton)) And (Not IsNull(RespPopupMenu)) Then
+			Try
+				RespMenuButton.Text := "Ранее использованные ответственные ▾";
+				RespMenuButton.Menu := RespPopupMenu;                     // IMenuButton.Menu: IPopupMenu
+				Gr := UiFind(Map_, "GrpTaskCard") As GroupBox;
+				If Not IsNull(Gr) Then
+					RespMenuButton.Parent := Gr;
+					RespMenuButton.Left := Double.RoundInt(250 * LayoutK);          // 276 - 26 (левый край группы)
+					RespMenuButton.Top := Double.RoundInt((198 - GROUP_CAPTION) * LayoutK); // 308 - 110 - подпись
+					RespMenuButton.Width := Double.RoundInt(300 * LayoutK);
+					RespMenuButton.Height := Double.RoundInt(28 * LayoutK);
+				Else
+					PlannerPlace(RespMenuButton, 276, 308, 300, 28);     // блок не создан — как раньше
+				End If;
+				RespMenuButton.OnClick := RespMenuButtonOnClick;          // страховка, если Menu не всплывёт
+				RespMenuBuild;
+			Except On e: Exception Do
+				Debug.WriteLine("Планировщик: меню ответственных — " + e.Message);
+			End Try;
+		End If;
+
+		// Компоненты меню (пункты строятся перед показом — см. MenuShow/MenuXxxBuild).
+		// Компонента MenuButton в сборке Forms нет: меню показывает Button методом Popup).
+		EnsureMenus;
+		// Кнопки-меню: подписываем явно (обработчик нельзя передать параметром — только присвоить)
+		Ctl := UiFind(Map_, "BtnMenuMore") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuMoreOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuUnavail") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuUnavailOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuNotify") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuNotifyOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuMark") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuMarkOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuDecision") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuDecisionOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuPlan") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuPlanOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuExport") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuExportOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnMenuService") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := MenuServiceOnClick;
+		End If;
+	End Sub SetupPlannerLayout;
+
+	Sub OpenUnavailabilityOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		If ContainersCount(CurrentContainers) = 0 Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		// Список задач контейнера ведёт сама форма (MetabaseListView2, левая колонка);
+		// таблица плана показывает ВСЕ задачи, пересекающиеся с периодом (блок «Раскладка (план)»).
+		UnavailImpacts := New ArrayList.Create;
+		UnavailWindow := New CUnavailWindow.Create;
+		// ⚠ Выбор записи недоступности здесь НЕ сбрасываем: иначе после «Взять период» → «Построить
+		// список» терялась выбранная запись (UnavailSelectedKey = 0), и «Сохранить в таблицу» просил
+		// выбрать запись заново. Сбрасывает выбор только «Ручной ввод периода».
+		// Пикеры уже настроены один раз в FormOnCreate (ConfigurePeriodPickers): здесь их вид
+		// подтверждаем повторно (идемпотентно, только Kind/Format — значения не сбрасываются), чтобы
+		// период точно попал в пикеры, даже если на стенде не привязан OnCreate.
+		ConfigurePeriodPickers;
+		FillUnavailPeriods;                      // список периодов недоступности из таблицы
+		UnavailSummaryMemo.Lines.Clear;
+		UnavailSummaryMemo.Lines.Add("Задайте период недоступности и нажмите «Построить список».");
+	End Sub OpenUnavailabilityOnClick;
+
+	Sub BuildAffectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rec: CUnavailRecord;
+	Begin
+		OpenUnavailabilityOnClick(Sender, Args);
+		If ContainersCount(CurrentContainers) = 0 Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач («Выбрать контейнеры…»)");
+			Return;
+		End If;
+		// Если период взят из записи («Взять период») — вернём его в пикеры: настройка вида пикеров
+		// не должна «съедать» значения, а сам выбор записи не сбрасывается (см. v1.88).
+		Rec := FindUnavailRecord(UnavailRecords, UnavailSelectedKey);
+		If Not IsNull(Rec) Then
+			SetPeriodPickers(Rec.StartDt, Rec.EndDt);
+		End If;
+		UnavailWindow := New CUnavailWindow.Create;
+		UnavailWindow.Start := ComposeDateAndTime(UnavailStartDatePicker.CurrentDate, UnavailStartTimePicker.CurrentDate);
+		UnavailWindow.Stop := ComposeDateAndTime(UnavailEndDatePicker.CurrentDate, UnavailEndTimePicker.CurrentDate);
+		UnavailWindow.TailHours := DEFAULT_TAIL_HOURS;
+
+		UnavailImpacts := PrepareUnavailabilityPlan(CurrentContainers,
+			UnavailWindow.Start, UnavailWindow.Stop, UnavailWindow.TailHours);
+		// Все пересекающиеся задачи по умолчанию «обрабатывать» + «перепланировать» (см. CollectAffectedTasks)
+		RenderUnavailSummary;
+	End Sub BuildAffectedOnClick;
+
+	// (пункт «Отметить затронутые» убран: все пересекающиеся задачи и так «обрабатывать» по умолчанию)
+
+	Sub SkipCheckedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		ApplyProcessed(DECISION_SKIP);
+		RenderUnavailSummary;
+	End Sub SkipCheckedOnClick;
+
+	Sub RescheduleCheckedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		ApplyProcessed(DECISION_RESCHEDULE);
+		RenderUnavailSummary;
+	End Sub RescheduleCheckedOnClick;
+
+	Sub SkipSelectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Impact: CUnavailImpact;
+	Begin
+		Impact := SelectedUnavailImpact;
+		If IsNull(Impact) Then
+			WinApplication.InformationBox("Выберите задачу из списка (она должна попадать в период)");
+			Return;
+		End If;
+		Impact.Decision := DECISION_SKIP;
+		RenderUnavailSummary;
+	End Sub SkipSelectedOnClick;
+
+	Sub RescheduleSelectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Impact: CUnavailImpact;
+	Begin
+		Impact := SelectedUnavailImpact;
+		If IsNull(Impact) Then
+			WinApplication.InformationBox("Выберите задачу из списка (она должна попадать в период)");
+			Return;
+		End If;
+		Impact.Decision := DECISION_RESCHEDULE;
+		RenderUnavailSummary;
+	End Sub RescheduleSelectedOnClick;
+
+	Sub RefreshUnavailPeriodsOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		FillUnavailPeriods;
+	End Sub RefreshUnavailPeriodsOnClick;
+
+	Sub TakeUnavailPeriodOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rec: CUnavailRecord;
+	Begin
+		Rec := FindUnavailRecord(UnavailRecords, SelectedUnavailPeriodKey);
+		If IsNull(Rec) Then
+			WinApplication.InformationBox("Выберите запись о недоступности в списке");
+			Return;
+		End If;
+		UnavailSelectedKey := Rec.Key;
+		SetPeriodPickers(Rec.StartDt, Rec.EndDt);
+		UnavailStartDatePicker.Enabled := False;   // период берём из таблицы, а не правим вручную
+		UnavailStartTimePicker.Enabled := False;
+		UnavailEndDatePicker.Enabled := False;
+		UnavailEndTimePicker.Enabled := False;
+	End Sub TakeUnavailPeriodOnClick;
+
+	Sub ManualPeriodOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		UnavailStartDatePicker.Enabled := True;
+		UnavailStartTimePicker.Enabled := True;
+		UnavailEndDatePicker.Enabled := True;
+		UnavailEndTimePicker.Enabled := True;
+		UnavailSelectedKey := 0;
+		SelectUnavailPeriodRow(0);             // в ручном режиме запись не выбрана — снимаем выделение
+	End Sub ManualPeriodOnClick;
+
+	Sub OpenRecordsWindowOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		F: Form;
+	Begin
+		F := New UNAVAILABILITYRECORDSForm.CreateForm(Self As IWin32Window);
+		F.ShowModal;
+		FillUnavailPeriods;                       // после закрытия окна — перечитать список
+	End Sub OpenRecordsWindowOnClick;
+
+	Sub SavePlanToTableOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Saved: Integer;
+	Begin
+		If UnavailSelectedKey = 0 Then
+			WinApplication.InformationBox("Сначала выберите запись о недоступности и возьмите из неё период");
+			Return;
+		End If;
+		If IsNull(UnavailImpacts) Then
+			WinApplication.InformationBox("Сначала постройте список затронутых задач");
+			Return;
+		End If;
+		Saved := SavePlanToTable(UnavailSelectedKey, UnavailImpacts);
+		If Saved = 0 Then
+			WinApplication.InformationBox("Не удалось сохранить план в таблицу");
+			Return;
+		End If;
+		WinApplication.InformationBox("План сохранён в таблицу. Строк: " + Saved.ToString
+			+ UNAVAIL_CRLF + PlanRunsSummaryText(UnavailSelectedKey));
+	End Sub SavePlanToTableOnClick;
+
+	Sub LoadPlanFromTableOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Applied: Integer;
+	Begin
+		If UnavailSelectedKey = 0 Then
+			WinApplication.InformationBox("Сначала выберите запись о недоступности и возьмите из неё период");
+			Return;
+		End If;
+		If IsNull(UnavailImpacts) Then
+			WinApplication.InformationBox("Сначала постройте список затронутых задач");
+			Return;
+		End If;
+		Applied := ApplyStoredPlanToImpacts(UnavailSelectedKey, UnavailImpacts);
+		RenderUnavailSummary;
+		WinApplication.InformationBox(ApplyStoredPlanReport(UnavailSelectedKey, UnavailImpacts));
+	End Sub LoadPlanFromTableOnClick;
+
+	Sub ShowStoredPlanOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rows: ArrayList;
+		Row: CUnavailStoredPlanRow;
+		Item: IListViewItem;
+		Done, I: Integer;
+	Begin
+		If UnavailSelectedKey = 0 Then
+			WinApplication.InformationBox("Сначала выберите запись о недоступности");
+			Return;
+		End If;
+		StoredPlanTable.Items.Clear;
+		Rows := LoadStoredPlanRows(UnavailSelectedKey);
+		Done := 0;
+		StoredPlanTable.Items.BeginUpdate;
+		For I := 0 To Rows.Count - 1 Do
+			Row := Rows.Item(I) As CUnavailStoredPlanRow;
+			StoredPlanTable.Items.Add(Row.TaskId);
+			Item := StoredPlanTable.Items.Item(StoredPlanTable.Items.Count - 1);
+			Item.ColumnText(1) := Row.TaskName;
+			Item.ColumnText(2) := Row.BaName;
+			Item.ColumnText(3) := Row.ResponsibleUser;
+			Item.ColumnText(4) := Row.StartOriginal.ToString;
+			Item.ColumnText(5) := Row.EndOriginal.ToString;
+			Item.ColumnText(6) := Row.SpanText;
+			If Row.HasNewStart Then
+				Item.ColumnText(7) := Row.NewStart.ToString;
+			End If;
+			If Row.HasDoneAt Then
+				Done := Done + 1;
+			End If;
+		End For;
+		StoredPlanTable.Items.EndUpdate;
+		SetMemoLines(UnavailSummaryMemo, "Сохранённый план по выбранной недоступности: строк "
+			+ Rows.Count.ToString + ", из них выполнено " + Done.ToString + "."
+			+ UNAVAIL_CRLF + PlanRunsSummaryText(UnavailSelectedKey));
+	End Sub ShowStoredPlanOnClick;
+
+	Sub DeletePlanOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Msg: String;
+	Begin
+		If UnavailSelectedKey = 0 Then
+			WinApplication.InformationBox("Сначала выберите запись о недоступности и возьмите из неё период");
+			Return;
+		End If;
+		Msg := "Убрать сохранённый план по записи " + UnavailSelectedKey.ToString
+			+ "? Диспетчер больше не будет её выполнять.";
+		If Not WinApplication.ConfirmationBox(Msg) Then
+			Return;
+		End If;
+		If DeleteStoredPlan(UnavailSelectedKey) Then
+			StoredPlanTable.Items.Clear;
+			UnavailSummaryMemo.Lines.Clear;
+			UnavailSummaryMemo.Lines.Add("План по записи " + UnavailSelectedKey.ToString + " удалён.");
+			FillUnavailPeriods;
+		Else
+			WinApplication.InformationBox("Не удалось удалить план (нет прав или таблица недоступна)");
+		End If;
+	End Sub DeletePlanOnClick;
+
+	Sub DryRunOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rows: ArrayList;
+		Row: CUnavailStoredRun;
+		S: String;
+		I: Integer;
+	Begin
+		If ContainersCount(CurrentContainers) = 0 Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач на форме «Планировщик»");
+			Return;
+		End If;
+		S := UnavailRunTickReport(CurrentContainer, DEFAULT_TAIL_HOURS);
+		Rows := LoadAttentionRunRows(24, 500);
+		If Rows.Count > 0 Then
+			S := S + UNAVAIL_CRLF + UNAVAIL_CRLF + "Требуют внимания (" + Rows.Count.ToString + "):";
+			For I := 0 To Rows.Count - 1 Do
+				Row := Rows.Item(I) As CUnavailStoredRun;
+				S := S + UNAVAIL_CRLF + Row.NewStart.ToString + " — " + Row.TaskId
+					+ " (" + UnavailRunStateText(Row.RunState) + ", попыток " + Row.Attempts.ToString
+					+ ", запись " + Row.Key.ToString + ")";
+				If Row.ErrorText <> "" Then
+					S := S + " " + Row.ErrorText;
+				End If;
+			End For;
+		End If;
+		SetMemoLines(UnavailSummaryMemo, S);
+	End Sub DryRunOnClick;
+
+	Sub ShowLogOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		SetMemoLines(UnavailSummaryMemo, UnavailLogText(UnavailSelectedKey, 200));
+	End Sub ShowLogOnClick;
+
+	// Журнал ВЫПОЛНЕННЫХ запусков диспетчера (таблица UNAVAILABILITY_RUN_LOG): попытки по выбранной
+	// записи недоступности, а если запись не выбрана (0) — по всем записям.
+	Sub ShowRunLogOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		SetMemoLines(UnavailSummaryMemo, RunLogText(UnavailSelectedKey, 200));
+	End Sub ShowRunLogOnClick;
+
+	Sub ApplyPlanAvoidingOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Windows: ArrayList;
+		Applied: Integer;
+		Msg: String;
+	Begin
+		If ContainersCount(CurrentContainers) = 0 Then
+			WinApplication.InformationBox("Сначала выберите контейнеры задач на форме «Планировщик»");
+			Return;
+		End If;
+		Windows := BuildForbiddenWindows;
+		Msg := "Построить и ПРИМЕНИТЬ план планировщика с учётом " + Windows.Count.ToString
+			+ " окна(окон) недоступности? Расписание задач будет перезаписано.";
+		If Not WinApplication.ConfirmationBox(Msg) Then
+			Return;
+		End If;
+		Applied := PlanAndApplyAvoiding(CurrentContainers, Windows);
+		WinApplication.InformationBox("План применён. Задач перенастроено: " + Applied.ToString + "."
+			+ UNAVAIL_CRLF + UNAVAIL_CRLF + PlanTextAvoiding(CurrentContainers, Windows));
+	End Sub ApplyPlanAvoidingOnClick;
+
+	Sub MarkAllAffectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		SetAllProcessed(True);
+		RenderUnavailSummary;
+	End Sub MarkAllAffectedOnClick;
+
+	Sub UnmarkAllAffectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		SetAllProcessed(False);
+		RenderUnavailSummary;
+	End Sub UnmarkAllAffectedOnClick;
+
+	Sub ApplyFilterOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		TableFilter := FilterEditBox.Text;
+		FillPlanTable;
+		If IsNull(UnavailImpacts) Then
+			SetMemoLines(UnavailSummaryMemo, "Фильтр: «" + TableFilter + "» — план ещё не построен.");
+			Return;
+		End If;
+		SetMemoLines(UnavailSummaryMemo, "Фильтр: «" + TableFilter + "» — строк в таблице "
+			+ PlanTable.Items.Count.ToString + " из " + UnavailImpacts.Count.ToString + "."
+			+ UNAVAIL_CRLF + UnavailPlanHeaderText(UnavailImpacts, UnavailWindow));
+	End Sub ApplyFilterOnClick;
+
+	Sub ResetFilterOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		TableFilter := "";
+		FilterEditBox.Text := "";
+		RenderUnavailSummary;
+	End Sub ResetFilterOnClick;
+
+	Sub NotifyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Notices: ArrayList;
+		Saved, Sent: Integer;
+		S, Msg: String;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			WinApplication.InformationBox("Сначала постройте список затронутых задач");
+			Return;
+		End If;
+		Notices := NoticesFromImpacts(UnavailImpacts, UnavailWindow);
+		S := UnavailNoticesText(Notices);
+		Saved := SaveNoticesToFolder(Notices, NOTIFY_FOLDER);
+		S := S + UNAVAIL_CRLF + "Файлов писем сохранено (" + NOTIFY_FOLDER + "): " + Saved.ToString + ".";
+		// Отправка — функцией заказчика SendMailMessage(To_; From_; Subject; Body) (SMTP-функция удалена)
+		Sent := 0;
+		Msg := "Отправить " + Notices.Count.ToString + " письмо(писем) ответственным?";
+		If WinApplication.ConfirmationBox(Msg) Then
+			Sent := SendNoticesUserMailer(Notices, NOTIFY_FROM);
+		End If;
+		S := S + UNAVAIL_CRLF + "Писем отправлено: " + Sent.ToString + ".";
+		SetMemoLines(UnavailSummaryMemo, S);
+	End Sub NotifyOnClick;
+
+	// Выбранная запись о недоступности (сроки + автор) из списка периодов
+	Function CurrentUnavailRecord: CUnavailRecord;
+	Var
+		I: Integer;
+	Begin
+		If IsNull(UnavailRecords) Or IsNull(UnavailRecordKeys) Then
+			Return Null;
+		End If;
+		If UnavailSelectedKey <= 0 Then
+			Return Null;
+		End If;
+		For I := 0 To UnavailRecordKeys.Count - 1 Do
+			If (UnavailRecordKeys.Item(I) As Integer) = UnavailSelectedKey Then
+				If I < UnavailRecords.Count Then
+					Return UnavailRecords.Item(I) As CUnavailRecord;
+				End If;
+			End If;
+		End For;
+		Return Null;
+	End Function CurrentUnavailRecord;
+
+	// «Разослать уведомление ответственным»: сроки недоступности + автор записи + список задач
+	// ответственного. Адрес берётся из колонки MAIL таблицы ответственных, отправка — своей функцией
+	// проекта SendMailMessage(To; From; Subject; Body) (UnavailNotify.SendNoticesUserMailer).
+	Sub NotifyResponsiblesOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rec: CUnavailRecord;
+		Notices, Problems: ArrayList;
+		Sent: Integer;
+		Msg, S: String;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			WinApplication.InformationBox("Сначала постройте список затронутых задач («Построить список»)");
+			Return;
+		End If;
+		Rec := CurrentUnavailRecord;
+		If IsNull(Rec) Then
+			WinApplication.InformationBox("Выберите запись о недоступности в списке периодов");
+			Return;
+		End If;
+		Problems := New ArrayList.Create;
+		Notices := NoticesForResponsibles(UnavailImpacts, RespIndex_, Rec.StartDt, Rec.EndDt,
+			Rec.Author, Problems);
+		S := UnavailNoticesForSendText(Notices, Problems);
+		SetMemoLines(UnavailSummaryMemo, S);
+		If Notices.Count = 0 Then
+			WinApplication.InformationBox("Уведомления не отправлены — подробности в сводке на форме.");
+			Return;
+		End If;
+		Msg := "Отправить уведомления (" + Notices.Count.ToString + " шт.) ответственным по адресам "
+			+ "из колонки MAIL?" + UNAVAIL_CRLF + UNAVAIL_CRLF + S;
+		If Not WinApplication.ConfirmationBox(Msg) Then
+			Return;
+		End If;
+		Sent := SendNoticesUserMailer(Notices, NOTIFY_FROM);
+		SetMemoLines(UnavailSummaryMemo, "Разослано уведомлений: " + Sent.ToString + " из "
+			+ Notices.Count.ToString + UNAVAIL_CRLF + UNAVAIL_CRLF + S);
+		WinApplication.InformationBox("Писем отправлено: " + Sent.ToString + " из "
+			+ Notices.Count.ToString + ".");
+	End Sub NotifyResponsiblesOnClick;
+
+	Sub MonitorOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		SetMemoLines(UnavailSummaryMemo, UnavailMonitorText);
+	End Sub MonitorOnClick;
+
+	Sub PanelPlace(C: IControl; L, T, W, H: Integer);
+	Begin
+		C.Left := Double.RoundInt((L + PANEL_X_SHIFT) * LayoutK);
+		C.Top := Double.RoundInt((T - LAYOUT_TOP_SHIFT) * LayoutK);
+		C.Width := Double.RoundInt((W + PANEL_X_GROW) * LayoutK);
+		C.Height := Double.RoundInt(H * LayoutK);
+	End Sub PanelPlace;
+
+	// Поместить контрол ВНУТРЬ блока: Parent := группа — ребёнок всегда рисуется ПОВЕРХ рамки.
+	// Без этого GROUP, созданная фабрикой позже (а списки репозитория размещены в дизайнере заранее),
+	// закрывает список — симптом «периоды недоступности не работают, их что-то перекрыло».
+	// RelL/RelT — от верхнего левого угла ГРУППЫ (единицы макета); внутри клиентской области
+	// координата уменьшается на высоту подписи GroupBox (GROUP_CAPTION).
+	Sub PlaceInGroup(C: IControl; GroupName: String; RelL, RelT, W, H: Integer);
+	Var
+		Gr: GroupBox;
+	Begin
+		If IsNull(C) Then
+			Return;
+		End If;
+		Gr := UiFind(Map_, GroupName) As GroupBox;
+		If IsNull(Gr) Then
+			PanelPlace(C, RelL, RelT, W, H);            // блока нет — обычное размещение
+			Return;
+		End If;
+		C.Parent := Gr;
+		C.Left := Double.RoundInt(RelL * LayoutK);
+		C.Top := Double.RoundInt((RelT - GROUP_CAPTION) * LayoutK);
+		C.Width := Double.RoundInt((W + PANEL_X_GROW) * LayoutK);
+		C.Height := Double.RoundInt(H * LayoutK);
+	End Sub PlaceInGroup;
+
+	// Автомасштаб рамки блока: группы (GROUP в описании экрана) создаёт фабрика, поэтому
+	// поля формы для них не объявляются — находим по имени в карте и настраиваем края.
+	Sub AnchorGroup(Name: String; StretchRight, StretchBottom: Boolean);
+	Var
+		Gr: GroupBox;
+	Begin
+		If IsNull(Map_) Or Not UI_AUTOSIZE_ON_RESIZE Then
+			Return;
+		End If;
+		Try
+			Gr := UiFind(Map_, Name) As GroupBox;
+			If Not IsNull(Gr) Then
+				SetAutoSize(Gr, StretchRight, StretchBottom);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: автомасштаб блока " + Name + " — " + e.Message);
+		End Try;
+	End Sub AnchorGroup;
+
+	// Табличный (колоночный) вид списка: Style = Report. Перечисление ListViewStyle
+	// (сборка Forms): 0 Icon — крупные пиктограммы, 1 SmallIcon — мелкие,
+	// 2 List — список пиктограмм, 3 Report — таблица. Без Report список рисует значки.
+	Sub SetupPanelList(LV: ListView);
+	Begin
+		Try
+			LV.Style := ListViewStyle.Report;
+			LV.GridLines := True;            // сетка между строками и столбцами
+			LV.RowSelect := True;            // выделять строку целиком
+			LV.ShowColumnHeaders := True;    // заголовки столбцов
+			LV.ReadOnly := True;             // текст ячеек не редактируется
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: настройка списка — " + e.Message);
+		End Try;
+	End Sub SetupPanelList;
+
+	// Выравнивание колонок таблицы плана (перечисление TextAlignment: Left / Center / Right):
+	// текстовые — влево, даты и длительность — по центру.
+	Function PlanColumnAlign(ColIdx: Integer): TextAlignment;
+	Begin
+		If ColIdx = UNAVAIL_COL_START_TIME Then
+			Return TextAlignment.Center;
+		End If;
+		If ColIdx = UNAVAIL_COL_END_TIME Then
+			Return TextAlignment.Center;
+		End If;
+		If ColIdx = UNAVAIL_COL_TIME_SPAN Then
+			Return TextAlignment.Center;
+		End If;
+		If ColIdx = UNAVAIL_COL_START_TIME_NEW Then
+			Return TextAlignment.Center;
+		End If;
+		Return TextAlignment.Left;
+	End Function PlanColumnAlign;
+
+	// Колонки таблицы плана — создаются кодом только если их ещё нет (Columns.Count = 0),
+	// поэтому в Инспекторе колонки можно задать вручную и код ничего не переопределит.
+	// Каждая колонка настраивается через SetListColumn (TaskContainerLib): подпись, ширина,
+	// «резиновость» (AutoSize) и выравнивание (TextAlignment). Тянется название задачи.
+	Sub SetupPlanTableColumns(LV: ListView);
+	Var
+		Col: IListViewColumn;
+		ColIdx: Integer;
+	Begin
+		Try
+			If (LV.Columns.Count = 0) Or (LV.Columns.Count <> UNAVAIL_PLAN_COLUMNS) Then
+				// Набор колонок изменился (в 1.86 добавлены «Обрабатывать» и «Не запускать») —
+				// пересоздаём, чтобы новые столбцы появились и на стенде, где колонки заданы ранее.
+				LV.Columns.Clear;
+				For ColIdx := 0 To UNAVAIL_PLAN_COLUMNS - 1 Do
+					Col := LV.Columns.Add;
+					SetListColumn(Col, UnavailPlanColumnCaption(ColIdx), UnavailPlanColumnWidth(ColIdx),
+						ColIdx = UNAVAIL_COL_TASK_NAME, PlanColumnAlign(ColIdx));
+				End For;
+			Else
+				SetColumnsAutoSize(LV.Columns);      // колонки задал Инспектор — включаем авторазмер
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: колонки таблицы плана — " + e.Message);
+		End Try;
+	End Sub SetupPlanTableColumns;
+
+	// Колонки списка периодов недоступности (5): начало, окончание, автор, изменение, план.
+	// SetListColumn: подпись, ширина, «резиновость» и выравнивание; тянется «Автор»
+	// (даты и признак плана — по центру).
+	Sub SetupRecordsListColumns(LV: ListView);
+	Var
+		Col: IListViewColumn;
+	Begin
+		Try
+			If LV.Columns.Count = 0 Then
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Начало", 150, False, TextAlignment.Center);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Окончание", 150, False, TextAlignment.Center);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Автор", 220, True, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Изменено", 150, False, TextAlignment.Center);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "План", 90, False, TextAlignment.Center);
+			Else
+				SetColumnsAutoSize(LV.Columns);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: колонки списка периодов — " + e.Message);
+		End Try;
+	End Sub SetupRecordsListColumns;
+
+	// Колонки списка задач контейнера (MetabaseListView — тоже IListView, поэтому IListViewColumns).
+	// Значения строк даёт сам компонент (Root — контейнер задач): из кода доступны подпись, ширина,
+	// выравнивание и авторазмер, свойства привязки колонки к атрибуту объекта в API нет — если на
+	// стенде колонки заданы в Инспекторе («Редактор колонок», атрибут + подпись), код их не трогает.
+	Sub SetupTaskListColumns(LV: MetabaseListView);
+	Var
+		Col: IListViewColumn;
+	Begin
+		Try
+			If LV.Columns.Count = 0 Then
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Задача", 260, True, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Тип", 120, False, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetListColumn(Col, "Состояние", 130, False, TextAlignment.Left);
+			Else
+				SetColumnsAutoSize(LV.Columns);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: колонки списка задач — " + e.Message);
+		End Try;
+	End Sub SetupTaskListColumns;
+
+	// Колонки списка затронутых задач убраны вместе с самим списком (1.86): роль «кто обрабатывается»
+	// выполняет таблица плана — колонки «Обрабатывать» / «Не запускать» (см. UnavailabilityPlanner).
+
+	// Колонки дерева задач (MetabaseTreeList → ITreeControl: коллекция СВОЯ, ITreeListColumns,
+	// элементы — ITreeListColumn; свойства те же: Caption, Width, AutoSize, Alignment).
+	// В шаблоне дерево убрано (не использовалось) — помощник оставлен на случай возврата TreeList.
+	Sub SetupTreeColumns(LV: MetabaseTreeList);
+	Var
+		Col: ITreeListColumn;
+	Begin
+		Try
+			If LV.Columns.Count = 0 Then
+				Col := LV.Columns.Add;
+				SetTreeColumn(Col, "Задача", 260, True, TextAlignment.Left);
+				Col := LV.Columns.Add;
+				SetTreeColumn(Col, "Тип", 120, False, TextAlignment.Left);
+			Else
+				SetTreeColumnsAutoSize(LV.Columns);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Планировщик: колонки дерева задач — " + e.Message);
+		End Try;
+	End Sub SetupTreeColumns;
+
+	Sub SetupPanelLayout;
+	Begin
+		Self.Width := Double.RoundInt((1780 + PANEL_X_SHIFT + PANEL_X_GROW) * LayoutK);
+		Self.Height := Double.RoundInt(1300 * LayoutK);
+
+		// Контролы внутри блоков: Parent := группа (ребёнок поверх рамки). Координаты — от угла группы.
+		// Блок «Затронутые задачи» убран (1.86): список затронутых = таблица плана в блоке «Раскладка».
+		PlaceInGroup(UnavailRecordsList, "GrpPeriods", 12, 26, 912, 130);
+		PlaceInGroup(UnavailStartDatePicker, "GrpPeriod", 12, 28, 230, 28);
+		PlaceInGroup(UnavailStartTimePicker, "GrpPeriod", 250, 28, 130, 28);
+		PlaceInGroup(UnavailEndDatePicker, "GrpPeriod", 388, 28, 230, 28);
+		PlaceInGroup(UnavailEndTimePicker, "GrpPeriod", 626, 28, 130, 28);
+		PlaceInGroup(PlanTable, "GrpPlan", 12, 79, 912, 440);
+		PlaceInGroup(StoredPlanTable, "GrpStored", 12, 35, 660, 60);
+
+		// Табличный вид списков (Style = Report — см. SetupPanelList) + колонки, если их нет
+		SetupPanelList(UnavailRecordsList);
+		SetupRecordsListColumns(UnavailRecordsList);
+		SetupPanelList(PlanTable);
+		SetupPlanTableColumns(PlanTable);
+		PlanTable.OnClick := PlanTableOnClick;      // клик по ячейкам-«крестикам» (обрабатывать / не запускать)
+		SetupPanelList(StoredPlanTable);
+		SetupPlanTableColumns(StoredPlanTable);
+		If Not IsNull(UnavailSummaryMemo) Then
+			// Сводка по периоду — длинный текст: перенос строк + вертикальная полоса прокрутки
+			// (IMemo.ScrollBars: ControlScrollStyle = None / Horizontal / Vertical / Both;
+			//  по умолчанию None, поэтому в Инспекторе уже ничего задавать не нужно)
+			Try
+				UnavailSummaryMemo.WordWrap := True;
+				UnavailSummaryMemo.ReadOnly := True;
+				UnavailSummaryMemo.ScrollBars := ControlScrollStyle.Vertical;
+			Except On e: Exception Do
+				Debug.WriteLine("Недоступность: настройка Memo сводки — " + e.Message);
+			End Try;
+		End If;
+		// Автомасштаб при изменении размеров окна: списки/таблицы/Memo панели тянутся по ширине.
+		// ⚠ Наборы кнопок панели заменены меню (BtnExportStored, BtnDeletePlan, …) — их имён здесь
+		// быть не должно: контролов с такими именами в форме нет, код бы не скомпилировался.
+		SetAutoSize(UnavailRecordsList, True, False);
+		SetAutoSize(PlanTable, True, False);
+		SetAutoSize(StoredPlanTable, True, False);
+		SetAutoSize(UnavailSummaryMemo, True, False);
+
+		// Рамки блоков правой колонки (GROUP в описании экрана — создаёт фабрика)
+		AnchorGroup("GrpPeriods", True, False);
+		AnchorGroup("GrpPeriod", True, False);
+		AnchorGroup("GrpMsg", True, False);
+		AnchorGroup("GrpPlan", True, False);
+		AnchorGroup("GrpStored", True, False);
+	End Sub SetupPanelLayout;
+
+	Sub ConfigurePeriodPickers;
+	Begin
+		Try
+			// DateTimePickerKind (сборка Forms): 0 Date — ввод/выбор даты, 1 Time — времени
+			UnavailStartDatePicker.Kind := DateTimePickerKind.Date;
+			UnavailEndDatePicker.Kind := DateTimePickerKind.Date;
+			UnavailStartTimePicker.Kind := DateTimePickerKind.Time;
+			UnavailEndTimePicker.Kind := DateTimePickerKind.Time;
+			UnavailStartDatePicker.Format := "dd.MM.yyyy";
+			UnavailEndDatePicker.Format := "dd.MM.yyyy";
+			UnavailStartTimePicker.Format := "HH:mm";
+			UnavailEndTimePicker.Format := "HH:mm";
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: формат пикеров — " + e.Message);
+		End Try;
+	End Sub ConfigurePeriodPickers;
+
+	// Разложить период по четырём пикерам.
+	// ВАЖНО: вид пикеров подтверждаем ДО записи значений (только Kind/Format, значения не сбрасываются) —
+	// иначе время не отобразится в пикере-«времени» (Kind сброшен Инспектором / не привязан OnCreate).
+	Sub SetPeriodPickers(StartDt: DateTime; EndDt: DateTime);
+	Begin
+		ConfigurePeriodPickers;
+		UnavailStartDatePicker.CurrentDate := StartDt;
+		UnavailStartTimePicker.CurrentDate := StartDt;
+		UnavailEndDatePicker.CurrentDate := EndDt;
+		UnavailEndTimePicker.CurrentDate := EndDt;
+		Debug.WriteLine("Недоступность: период в пикеры — " + StartDt.ToString + " — " + EndDt.ToString);
+	End Sub SetPeriodPickers;
+
+	Sub FillUnavailPeriods;
+	Var
+		Item: IListViewItem;
+		Rec: CUnavailRecord;
+		I: Integer;
+	Begin
+		UnavailRecords := LoadUnavailRecords;
+		UnavailRecordsList.Items.Clear;
+		UnavailRecordKeys := New ArrayList.Create;
+		If IsNull(UnavailRecords) Then
+			Return;
+		End If;
+		UnavailRecordsList.Items.BeginUpdate;
+		For I := 0 To UnavailRecords.Count - 1 Do
+			Rec := UnavailRecords.Item(I) As CUnavailRecord;
+			UnavailRecordKeys.Add(Rec.Key);
+			// первый столбец задаётся при добавлении строки, остальные — через ColumnText
+			UnavailRecordsList.Items.Add(Rec.StartDt.ToString);
+			Item := UnavailRecordsList.Items.Item(UnavailRecordsList.Items.Count - 1);
+			Item.ColumnText(1) := Rec.EndDt.ToString;
+			Item.ColumnText(2) := Rec.Author;
+			Item.ColumnText(3) := Rec.ChangedAt.ToString;
+			If HasStoredPlan(Rec.Key) Then          // 4-я колонка — признак сохранённого плана
+				Item.ColumnText(4) := "есть план";
+			Else
+				Item.ColumnText(4) := "—";
+			End If;
+		End For;
+		UnavailRecordsList.Items.EndUpdate;
+		SelectUnavailPeriodRow(UnavailSelectedKey);   // выбор записи не должен «слетать» после обновления
+	End Sub FillUnavailPeriods;
+
+	// Выделить строку списка периодов по ключу записи (UnavailSelectedKey) и прокрутить к ней.
+	// Нужно, чтобы выбор сохранялся после «Обновить список периодов» и «Построить список»
+	// (список пересобирается заново, и без этого выделение пропадало).
+	Sub SelectUnavailPeriodRow(Key: Integer);
+	Var
+		Row: IListViewItem;
+		I: Integer;
+	Begin
+		If IsNull(UnavailRecordsList) Or IsNull(UnavailRecordKeys) Then
+			Return;
+		End If;
+		Try
+			// снимаем отметку со всех строк (IListViewItem.Selected — «признак отметки элемента»)
+			For I := 0 To UnavailRecordsList.Items.Count - 1 Do
+				Row := UnavailRecordsList.Items.Item(I);
+				If Not IsNull(Row) Then
+					Row.Selected := False;
+				End If;
+			End For;
+			If Key <= 0 Then
+				Return;                              // Key = 0 — снять выделение (ручной ввод периода)
+			End If;
+			For I := 0 To UnavailRecordKeys.Count - 1 Do
+				If (UnavailRecordKeys.Item(I) As Integer) = Key Then
+					Row := UnavailRecordsList.Items.Item(I);
+					If Not IsNull(Row) Then
+						Row.Selected := True;
+						Row.MakeVisible;                 // прокрутить список к выбранной строке
+					End If;
+					Return;
+				End If;
+			End For;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: выделение записи в списке периодов — " + e.Message);
+		End Try;
+	End Sub SelectUnavailPeriodRow;
+
+	// Проставить/снять «обрабатывать» у всех пересекающихся задач (пункты меню «Отметки ▾»)
+	Sub SetAllProcessed(Value: Boolean);
+	Var
+		Impact: CUnavailImpact;
+		I, Cnt: Integer;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			Return;
+		End If;
+		Cnt := 0;
+		For I := 0 To UnavailImpacts.Count - 1 Do
+			Impact := UnavailImpacts.Item(I) As CUnavailImpact;
+			SetImpactFlags(Impact, Value, False);   // снято — задача вне плана; стоит — «перепланировать»
+			Cnt := Cnt + 1;
+		End For;
+		Debug.WriteLine("Недоступность: «обрабатывать» = " + Value.ToString + " у строк: " + Cnt.ToString);
+	End Sub SetAllProcessed;
+
+	// «Не запускать / перепланировать» для всех ОБРАБАТЫВАЕМЫХ строк (в колонке «Обрабатывать» крестик)
+	Function ApplyProcessed(Decision: String): Integer;
+	Var
+		Impact: CUnavailImpact;
+		I, Cnt: Integer;
+	Begin
+		Cnt := 0;
+		If IsNull(UnavailImpacts) Then
+			Return 0;
+		End If;
+		For I := 0 To UnavailImpacts.Count - 1 Do
+			Impact := UnavailImpacts.Item(I) As CUnavailImpact;
+			If ImpactProcessed(Impact) Then
+				SetImpactFlags(Impact, True, Decision = DECISION_SKIP);
+				Cnt := Cnt + 1;
+			End If;
+		End For;
+		Return Cnt;
+	End Function ApplyProcessed;
+
+	// (работа с планом — только через таблицу СУБД: файловые сохранение/загрузка/CSV/HTML убраны 1.86)
+
+	// здесь были Sub WritePlan / Sub ReadPlan — убраны вместе с файловыми операциями (1.86)
+
+
+
+	Function UnavailImpactMatchesFilter(Impact: CUnavailImpact): Boolean;
+	Var
+		F: String;
+	Begin
+		F := String.ToLower(String.Trim(TableFilter));
+		If F = "" Then
+			Return True;
+		End If;
+		If TextContainsNoCase(Impact.Id, F) Then
+			Return True;
+		End If;
+		If TextContainsNoCase(Impact.Name, F) Then
+			Return True;
+		End If;
+		If TextContainsNoCase(Impact.BusinessApp, F) Then
+			Return True;
+		End If;
+		If TextContainsNoCase(Impact.ResponsibleUser, F) Then
+			Return True;
+		End If;
+		Return False;
+	End Function UnavailImpactMatchesFilter;
+
+	Function TextContainsNoCase(S: String; Needle: String): Boolean;
+	Var
+		Low: String;
+	Begin
+		Low := String.ToLower(S);
+		Return Low.IndexOf(Needle) >= 0;
+	End Function TextContainsNoCase;
+
+	// Строка таблицы плана, выбранная пользователем (для пунктов «Решение ▾»).
+	// Таблица плана может быть отфильтрована, поэтому строку находим по Id задачи (первая колонка).
+	Function SelectedPlanImpact: CUnavailImpact;
+	Var
+		Item: IListViewItem;
+		Id: String;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			Return Null;
+		End If;
+		Item := PlanTable.SelectedItem;
+		If IsNull(Item) Then
+			Item := PlanTable.FocusedItem;           // клик мог ещё не изменить SelectedItem
+		End If;
+		If IsNull(Item) Then
+			Return Null;
+		End If;
+		Id := Item.Text;                             // первая колонка = TASK_ID (см. FillPlanTable)
+		Return FindImpactById(UnavailImpacts, Id);
+	End Function SelectedPlanImpact;
+
+	// Колонка таблицы плана по координате X (пиксели от левого края списка); -1 — не определили.
+	// Сумму ширин колонок берём из самих колонок, поэтому горизонтальной прокрутки быть не должно
+	// (ширины подобраны в UnavailPlanColumnWidth с запасом).
+	Function PlanTableColumnAt(X: Integer): Integer;
+	Var
+		Sum, I: Integer;
+	Begin
+		Sum := 0;
+		For I := 0 To PlanTable.Columns.Count - 1 Do
+			Sum := Sum + (PlanTable.Columns.Item(I) As IListViewColumn).Width;
+			If X < Sum Then
+				Return I;
+			End If;
+		End For;
+		Return -1;
+	End Function PlanTableColumnAt;
+
+	// Клик по таблице плана: переключаем «крестики» колонок «Обрабатывать» / «Не запускать».
+	// Колонка определяется по координате X; если распознали не «крестик» (шапка, другие колонки) —
+	// ничего не меняем. Те же действия доступны пунктами меню «Отметки ▾» / «Решение ▾».
+	Sub PlanTableOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Col: Integer;
+		Impact: CUnavailImpact;
+	Begin
+		Impact := SelectedPlanImpact;
+		If IsNull(Impact) Then
+			Return;
+		End If;
+		Col := PlanTableColumnAt(Args.pPoint.X);
+		If Col = UNAVAIL_COL_PROCESS Then
+			SetImpactFlags(Impact, Not ImpactProcessed(Impact), False);
+		Else
+			If Col = UNAVAIL_COL_SKIP Then
+				SetImpactFlags(Impact, True, Not ImpactSkipped(Impact));
+			Else
+				Return;                              // клик не по «крестику»
+			End If;
+		End If;
+		Debug.WriteLine("Недоступность: «" + Impact.Id + "» — обрабатывать "
+			+ ImpactProcessed(Impact).ToString + ", не запускать " + ImpactSkipped(Impact).ToString);
+		RenderUnavailSummary;
+	End Sub PlanTableOnClick;
+
+	// «Пересчитать план»: окно параметров (начало / число слоёв / желаемое окончание) →
+	// раскладка DistributeScheduleLayers (слои набиваются плотно, см. UnavailabilityPlanner.fore)
+	Sub RecalcPlanOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		F: PLANPARAMSForm;
+		Sent: Variant;
+		DefaultStart: DateTime;
+		DefaultLayers: Integer;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			WinApplication.InformationBox("Сначала постройте список затронутых задач («Построить список»)");
+			Return;
+		End If;
+		DefaultStart := UnavailWindow.Stop;          // по умолчанию начало плана = окончание простоя
+		DefaultLayers := PlanLayersForFinish(UnavailImpacts, DefaultStart,
+			DateTime.AddSeconds(DefaultStart, UnavailWindow.TailHours * 3600));   // по хвостовому окну
+		Try
+			F := New PLANPARAMSForm.CreateForm(Self As IWin32Window);
+			F.SendCommand("SetCaption", "Параметры плана недоступности");
+			F.SendCommand("SetStart", DefaultStart.ToString);          // начало плана
+			F.SendCommand("SetLayers", DefaultLayers.ToString);        // слоёв (по хвостовому окну)
+			F.SendCommand("SetFinish", UnavailWindow.Stop.ToString);   // подсказка для «желаемого окончания»
+			F.ShowModal;                             // закрывается крестиком окна
+			Sent := F.SendCommand("GetParams", Null);
+			ApplyPlanParams(UnvVarToStr(Sent));
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: окно параметров плана — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть параметры плана: " + e.Message);
+		End Try;
+	End Sub RecalcPlanOnClick;
+
+	// Разбор ответа окна параметров: "applied|layers|start|finish". finish не пусто — слои считаем
+	// по желаемому окончанию (PlanLayersForFinish), иначе берём слои, заданные пользователем.
+	Sub ApplyPlanParams(S: String);
+	Var
+		Parts: ArrayList;
+		Layers: Integer;
+		PlanStart, Finish: DateTime;
+	Begin
+		Parts := SplitByChar(S, "|");
+		If Parts.Count < 4 Then
+			Return;
+		End If;
+		If UnvVarToStr(Parts.Item(0)) <> "1" Then
+			Return;                                  // «Отмена» — план не пересчитываем
+		End If;
+		Layers := UnvVarToInt(Parts.Item(1));
+		PlanStart := UnvVarToDate(Parts.Item(2));
+		If UnvVarToStr(Parts.Item(3)) <> "" Then
+			Finish := UnvVarToDate(Parts.Item(3));
+			If Finish > PlanStart Then
+				Layers := PlanLayersForFinish(UnavailImpacts, PlanStart, Finish);
+			End If;
+		End If;
+		If Layers < 1 Then
+			Layers := 1;
+		End If;
+		DistributeScheduleLayers(UnavailImpacts, PlanStart, Layers);
+		RenderUnavailSummary;
+		SetMemoLines(UnavailSummaryMemo, "План пересчитан: слоёв " + Layers.ToString
+			+ ", начало " + PlanStart.ToString + UNAVAIL_CRLF
+			+ UnavailPlanHeaderText(UnavailImpacts, UnavailWindow));
+	End Sub ApplyPlanParams;
+
+	// Разбить строку по символу-разделителю (Split в Fore нет: используем IndexOf/SubString)
+	Function SplitByChar(S: String; Sep: String): ArrayList;
+	Var
+		Parts: ArrayList;
+		Rest, Part: String;
+		P: Integer;
+	Begin
+		Parts := New ArrayList.Create;
+		Rest := S;
+		While Rest <> "" Do
+			P := Rest.IndexOf(Sep);
+			If P < 0 Then
+				Parts.Add(Rest);
+				Rest := "";
+			Else
+				Part := Rest.SubString(0, P);
+				Parts.Add(Part);
+				Rest := Rest.SubString(P + 1, Rest.Length - P - 1);
+			End If;
+		End While;
+		If S = "" Then
+			Parts.Add("");
+		End If;
+		Return Parts;
+	End Function SplitByChar;
+
+	Sub FillPlanTable;
+	Var
+		Item: IListViewItem;
+		Impact: CUnavailImpact;
+		C, I: Integer;
+	Begin
+		PlanTable.Items.Clear;
+		If IsNull(UnavailImpacts) Then
+			Return;
+		End If;
+		PlanTable.Items.BeginUpdate;
+		For I := 0 To UnavailImpacts.Count - 1 Do
+			Impact := UnavailImpacts.Item(I) As CUnavailImpact;
+			// фильтр: показываем только строки, совпавшие с введённым текстом
+			If UnavailImpactMatchesFilter(Impact) Then
+				// первый столбец (TASK_ID) задаётся при добавлении строки, остальные — через ColumnText
+				PlanTable.Items.Add(UnavailPlanCell(Impact, UNAVAIL_COL_TASK_ID));
+				Item := PlanTable.Items.Item(PlanTable.Items.Count - 1);
+				For C := UNAVAIL_COL_TASK_ID + 1 To UNAVAIL_PLAN_COLUMNS - 1 Do
+					Item.ColumnText(C) := UnavailPlanCell(Impact, C);
+				End For;
+			End If;
+		End For;
+		PlanTable.Items.EndUpdate;
+	End Sub FillPlanTable;
+
+	Sub RenderUnavailSummary;
+	Begin
+		If IsNull(UnavailImpacts) Then
+			Return;
+		End If;
+		SetMemoLines(UnavailSummaryMemo, UnavailPlanHeaderText(UnavailImpacts, UnavailWindow));
+		UpdateStatusLine;                       // строка статуса в блоке «Затронутые задачи»
+		FillPlanTable;
+	End Sub RenderUnavailSummary;
+
+	Function SelectedUnavailPeriodKey: Integer;
+	Var
+		Item: IListViewItem;
+	Begin
+		If IsNull(UnavailRecordsList.SelectedItem) Then
+			Return 0;
+		End If;
+		Item := UnavailRecordsList.SelectedItem;   // тип уже IListViewItem — привод не нужен
+		If (Item.Index < 0) Or (Item.Index >= UnavailRecordKeys.Count) Then
+			Return 0;
+		End If;
+		Return UnavailRecordKeys.Item(Item.Index) As Integer;
+	End Function SelectedUnavailPeriodKey;
+
+	// Задача, выбранная в таблице плана (для пунктов «Решение ▾» и клика по «крестикам»)
+	Function SelectedUnavailImpact: CUnavailImpact;
+	Begin
+		Return SelectedPlanImpact;
+	End Function SelectedUnavailImpact;
+
+	Function BuildForbiddenWindows: ArrayList;
+	Var
+		Records: ArrayList;
+		Rec: CUnavailRecord;
+		W: CPlanWindow;
+		Windows: ArrayList;
+		I: Integer;
+	Begin
+		Windows := New ArrayList.Create;
+		Records := LoadUnavailRecords;
+		For I := 0 To Records.Count - 1 Do
+			Rec := Records.Item(I) As CUnavailRecord;
+			W := New CPlanWindow.Create;
+			W.StartDt := Rec.StartDt;
+			W.EndDt := Rec.EndDt;
+			Windows.Add(W);
+		End For;
+		
+		Return Windows;
+	End Function BuildForbiddenWindows;
+
+End Class SCHEDULERForm;

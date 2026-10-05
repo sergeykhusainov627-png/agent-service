@@ -1,0 +1,448 @@
+// ID: TASKPLANNER  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Планировщик задач: анализ загрузки контейнера и равномерная раскладка стартов.
+// Логика: собрать задачи → средняя длительность каждой → развести старты внутри окна →
+// распределить задачи по классам (Class_ — отдельные очереди планировщика) → применить.
+// Проект «Планировщик задач: равномерное распределение нагрузки».
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	// Окно планирования по умолчанию (локальное время сервера)
+	PLAN_WINDOW_START_HOUR = 1;
+	PLAN_WINDOW_END_HOUR = 6;
+	// Число очередей планировщика (значение свойства Class_)
+	PLAN_QUEUES = 4;
+	CRLF = #13 + #10;
+
+// --- Информация о задаче для планирования ---
+Class CTaskInfo: Object
+	Public Descriptor: IMetabaseObjectDescriptor;
+	Public Id: String;
+	Public Name: String;
+	Public State: ScheduledTaskState;
+	Public Active: Boolean;
+	Public Queue: Integer;
+	Public AvgSeconds: Double;
+	Public PlannedStart: DateTime;
+	Public ContainerId: String;      // Id контейнера, из которого задача получена (анализ/сводка)
+End Class CTaskInfo;
+
+
+// --- Средняя длительность выполнения задачи по её истории (секунды) ---
+Function GetAverageDurationSeconds(Task: IScheduledTask): Double;
+Var
+	Results: IScheduledTaskResults;
+	Res: IScheduledTaskResult;
+	TotalSeconds: Double;
+	Cnt, i: Integer;
+Begin
+	// История может быть недоступна: возвращаем 0, а не исключение (функцию вызывают из событий формы)
+	Results := Null;
+	Try
+		Results := Task.GetResults;
+	Except On e: Exception Do
+		Debug.WriteLine("Планировщик: история задачи недоступна — " + e.Message);
+	End Try;
+	TotalSeconds := 0;
+	Cnt := 0;
+	If IsNull(Results) Then
+		Return 0;
+	End If;
+	Try
+		For i := 0 To Results.Count - 1 Do
+			Res := Results.Item(i);
+			If Res.Finished Then
+				TotalSeconds := TotalSeconds + DateTime.Difference(Res.StartDateTime, Res.FinishDateTime).TotalSeconds;
+				Cnt := Cnt + 1;
+			End If;
+		End For;
+	Except On e: Exception Do
+		Debug.WriteLine("Планировщик: разбор истории задачи — " + e.Message);
+		Cnt := 0;
+	End Try;
+	If Cnt = 0 Then
+		Return 0;
+	End If;
+	Return TotalSeconds / (Cnt As Double);
+End Function GetAverageDurationSeconds;
+
+// --- Создание записи о задаче ---
+Function NewTaskInfo(TaskDesc: IMetabaseObjectDescriptor): CTaskInfo;
+Var
+	Info: CTaskInfo;
+	Task: IScheduledTask;
+Begin
+	Info := New CTaskInfo.Create;
+	Info.Descriptor := TaskDesc;
+	Info.Id := TaskDesc.Id;
+	Info.Name := TaskDesc.Name;
+	// BindScheduledTask не выбрасывает исключение: если задача не открылась — пропускаем её параметры
+	Task := BindScheduledTask(TaskDesc);
+	If IsNull(Task) Then
+		Info.State := ScheduledTaskState.Inactive;
+		Info.Active := False;
+		Info.Queue := 0;
+		Info.AvgSeconds := 0;
+		Return Info;
+	End If;
+	Info.State := Task.State;
+	Info.Active := Task.Properties.Active;
+	Info.Queue := Task.Properties.Class_;
+	Info.AvgSeconds := GetAverageDurationSeconds(Task);
+	Return Info;
+End Function NewTaskInfo;
+
+// --- Собрать информацию по всем задачам СПИСКА контейнеров (дубли по Id — один раз) ---
+Function CollectTaskInfos(Containers: ArrayList): ArrayList;
+Var
+	Infos: ArrayList;
+	Seen: SortedList;
+	Cont: IMetabaseObjectDescriptor;
+	TaskDesc: IMetabaseObjectDescriptor;
+	Info: CTaskInfo;
+	Ct: IMetabaseObjectDescriptors;
+	I, J: Integer;
+Begin
+	Infos := New ArrayList.Create;
+	Seen := New SortedList.Create;
+	If IsNull(Containers) Then
+		Return Infos;
+	End If;
+	For I := 0 To Containers.Count - 1 Do
+		Cont := Containers.Item(I) As IMetabaseObjectDescriptor;
+		If Not IsNull(Cont) Then
+			Ct := Null;
+			Try
+				Ct := GetContainerTasks(Cont);          // задача в двух контейнерах — берём один раз
+			Except On e: Exception Do
+				Debug.WriteLine("Планировщик: контейнер «" + Cont.Id + "» — задачи не прочитались: " + e.Message);
+				Ct := Null;
+			End Try;
+			If Not IsNull(Ct) Then
+				For J := 0 To Ct.Count - 1 Do
+					TaskDesc := Ct.Item(J) As IMetabaseObjectDescriptor;
+					If Not IsNull(TaskDesc) Then
+						If Seen.IndexOfKey(String.ToUpper(TaskDesc.Id)) < 0 Then
+							Seen.Add(String.ToUpper(TaskDesc.Id), Cont.Id);
+							Info := NewTaskInfo(TaskDesc);
+							Info.ContainerId := Cont.Id;
+							Infos.Add(Info);
+						End If;
+					End If;
+				End For;
+			End If;
+		End If;
+	End For;
+	Return Infos;
+End Function CollectTaskInfos;
+
+// --- Построить план: развести старты внутри окна и распределить по очередям ---
+// Порядок планирования (LPT: длинные задачи вперёд) задаётся через SortedList:
+// ключ — ранг задачи (0 = самая длинная). Равные длительности разводятся по исходному индексу,
+// поэтому ключи уникальны, а SortedList сам держит порядок — ручная сортировка не нужна.
+Function BuildPlan(Infos: ArrayList; WindowStart: DateTime; WindowEnd: DateTime; Queues: Integer): Boolean;
+Var
+	ByPlan: SortedList;
+	Info: CTaskInfo;
+	TotalSeconds, AvailableSeconds: Double;
+	StepSeconds, OffsetSeconds: Integer;
+	D, Dj: Double;
+	i, j, Rank, cnt: Integer;
+Begin
+	cnt := Infos.Count;
+	If cnt = 0 Then
+		Return False;
+	End If;
+	If Queues < 1 Then
+		Queues := 1;
+	End If;
+
+	TotalSeconds := 0;
+	For i := 0 To cnt - 1 Do
+		TotalSeconds := TotalSeconds + (Infos.Item(i) As CTaskInfo).AvgSeconds;
+	End For;
+
+	AvailableSeconds := DateTime.Difference(WindowStart, WindowEnd).TotalSeconds;
+	If AvailableSeconds < TotalSeconds Then
+		StepSeconds := Double.RoundInt(TotalSeconds / (cnt As Double));
+	Else
+		StepSeconds := Double.RoundInt(AvailableSeconds / (cnt As Double));
+	End If;
+
+	// Ранжирование: ключ SortedList = число задач длиннее текущей (равные — по исходному индексу)
+	ByPlan := New SortedList.Create;
+	For i := 0 To cnt - 1 Do
+		Info := Infos.Item(i) As CTaskInfo;
+		D := Info.AvgSeconds;
+		Rank := 0;
+		For j := 0 To cnt - 1 Do
+			If j <> i Then
+				Dj := (Infos.Item(j) As CTaskInfo).AvgSeconds;
+				If (Dj > D) Or ((Dj = D) And (j < i)) Then
+					Rank := Rank + 1;
+				End If;
+			End If;
+		End For;
+		ByPlan.Add(Rank, Info);
+	End For;
+
+	// Раскладка: равномерные старты + раскидывание по очередям
+	OffsetSeconds := 0;
+	For i := 0 To ByPlan.Count - 1 Do
+		Info := ByPlan.GetByIndex(i) As CTaskInfo;
+		Info.PlannedStart := DateTime.AddSeconds(WindowStart, OffsetSeconds);
+		Info.Queue := i Mod Queues;
+		OffsetSeconds := OffsetSeconds + StepSeconds;
+	End For;
+	Return True;
+End Function BuildPlan;
+
+// --- Применить план: записать период (ежедневно), Class_ и Queueing ---
+Function ApplyPlan(Infos: ArrayList): Integer;
+Var
+	Info: CTaskInfo;
+	TaskObj: IMetabaseObject;
+	Task: IScheduledTask;
+	Props: IScheduledTaskProperties;
+	Period: IScheduledTaskPeriodDaily;
+	Applied, i,Errors: Integer;
+Begin
+	Applied := 0;
+	Errors := 0;
+	For i := 0 To Infos.Count - 1 Do
+		Info := Infos.Item(i) As CTaskInfo;
+		// Каждая задача — в своём Try: одна «плохая» задача (права, блокировка объекта, приведение
+		// периода) не должна прерывать применение плана и вылетать исключением из события формы.
+		Try
+			// План может охватывать НЕСКОЛЬКО контейнеров, а дескрипторы из IScheduledTasksContainer.Tasks
+			// «внутри контейнера»: сначала берём задачу как объект РЕПОЗИТОРИЯ по Id, контейнерный —
+			// как резерв (см. комментарий к TaskRepoDescriptor в UnavailabilityPlanner.fore).
+			TaskObj := Null;
+			Try
+				TaskObj := MetabaseClass.Active.ItemById(Info.Id).Edit;
+			Except On e: Exception Do
+				TaskObj := Null;
+			End Try;
+			If IsNull(TaskObj) Then
+				TaskObj := Info.Descriptor.Edit;
+			End If;
+			Task := TaskObj As IScheduledTask;
+			Props := Task.Properties;
+
+			Period := Props.CreatePeriod(ScheduledTaskPeriodType.Daily) As IScheduledTaskPeriodDaily;
+			Period.StartDateTime := Info.PlannedStart;
+			Props.Period := Period;
+			Props.Class_ := Info.Queue;
+			Props.Queueing := True;
+
+			TaskObj.Save;
+			Applied := Applied + 1;
+		Except On e: Exception Do
+			Errors := Errors + 1;
+			Debug.WriteLine("Планировщик: задача «" + Info.Id + "» не перенастроена — " + e.Message);
+		End Try;
+	End For;
+	If Errors > 0 Then
+		Debug.WriteLine("Планировщик: применено задач " + Applied.ToString + ", с ошибками " + Errors.ToString);
+	End If;
+	Return Applied;
+End Function ApplyPlan;
+
+// --- Окно планирования по умолчанию ---
+// Compose — метод класса DateTime (статический): DateTime.Compose(год, мес, день, ч, мин, с, мс).
+// Year/Month/Day — свойства переменной типа DateTime (берём от DateTime.Now).
+Function GetPlanWindowStart: DateTime;
+Begin
+	Return DateTime.Compose(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, PLAN_WINDOW_START_HOUR, 0, 0, 0);
+End Function GetPlanWindowStart;
+
+Function GetPlanWindowEnd: DateTime;
+Begin
+	Return DateTime.Compose(DateTime.Now.Year, DateTime.Now.Month, DateTime.Now.Day, PLAN_WINDOW_END_HOUR, 0, 0, 0);
+End Function GetPlanWindowEnd;
+
+// --- Текстовая сводка плана ---
+Function PlanSummary(Infos: ArrayList): String;
+Var
+	Info: CTaskInfo;
+	TotalSeconds: Double;
+	i: Integer;
+	s: String;
+Begin
+	TotalSeconds := 0;
+	For i := 0 To Infos.Count - 1 Do
+		TotalSeconds := TotalSeconds + (Infos.Item(i) As CTaskInfo).AvgSeconds;
+	End For;
+
+	s := "Задач: " + Infos.Count.ToString + CRLF;
+	s := s + "Суммарная средняя длительность, ч: " + (TotalSeconds / (3600 As Double)).ToString + CRLF;
+	s := s + "Окно: " + GetPlanWindowStart.ToString + " — " + GetPlanWindowEnd.ToString + CRLF;
+	For i := 0 To Infos.Count - 1 Do
+		Info := Infos.Item(i) As CTaskInfo;
+		s := s + Info.Id + " | очередь=" + Info.Queue.ToString
+			+ " | ср. сек=" + Info.AvgSeconds.ToString
+			+ " | старт=" + Info.PlannedStart.ToString + CRLF;
+	End For;
+	Return s;
+End Function PlanSummary;
+
+// --- Анализ раскладки СПИСКА контейнеров как ДАННЫЕ (а не текст): список CTaskInfo
+// с заполненными PlannedStart/Queue. Используется и текстовой сводкой (PlanText), и таблицей
+// анализа в окне PLANTEXTForm (там строки показываются гридом с заголовками).
+Function BuildPlanInfosForContainers(Containers: ArrayList): ArrayList;
+Var
+	Infos: ArrayList;
+Begin
+	Infos := CollectTaskInfos(Containers);
+	BuildPlan(Infos, GetPlanWindowStart, GetPlanWindowEnd, PLAN_QUEUES);
+	Return Infos;
+End Function BuildPlanInfosForContainers;
+
+// --- Какие контейнеры попали в набор задач: «; контейнеров: 2 (A, B)» (пусто — один/неизвестно) ---
+Function PlanInfosContainersText(Infos: ArrayList): String;
+Var
+	Seen: SortedList;
+	Order: ArrayList;
+	Info: CTaskInfo;
+	S: String;
+	I: Integer;
+Begin
+	If IsNull(Infos) Then
+		Return "";
+	End If;
+	Seen := New SortedList.Create;
+	Order := New ArrayList.Create;
+	For I := 0 To Infos.Count - 1 Do
+		Info := Infos.Item(I) As CTaskInfo;
+		If Not IsNull(Info) Then
+			If Info.ContainerId <> "" Then
+				If Seen.IndexOfKey(Info.ContainerId) < 0 Then
+					Seen.Add(Info.ContainerId, True);
+					Order.Add(Info.ContainerId);
+				End If;
+			End If;
+		End If;
+	End For;
+	If Order.Count = 0 Then
+		Return "";
+	End If;
+	S := "";
+	For I := 0 To Order.Count - 1 Do
+		If S <> "" Then
+			S := S + ", ";
+		End If;
+		S := S + (Order.Item(I) As String);
+	End For;
+	Return "; контейнеров: " + Order.Count.ToString + " (" + S + ")";
+End Function PlanInfosContainersText;
+
+// --- Строка-заголовок таблицы анализа: сколько задач, суммарная длительность, окно планирования ---
+Function PlanInfosHeader(Infos: ArrayList): String;
+Var
+	TotalSeconds: Double;
+	i: Integer;
+Begin
+	TotalSeconds := 0;
+	If IsNull(Infos) Then
+		Return "Задач: 0";
+	End If;
+	For i := 0 To Infos.Count - 1 Do
+		TotalSeconds := TotalSeconds + (Infos.Item(i) As CTaskInfo).AvgSeconds;
+	End For;
+	Return "Задач: " + Infos.Count.ToString + PlanInfosContainersText(Infos)
+		+ "; суммарная средняя длительность, ч: " + Double.RoundInt(TotalSeconds / 3600).ToString
+		+ "; окно: " + GetPlanWindowStart.ToString + " — " + GetPlanWindowEnd.ToString;
+End Function PlanInfosHeader;
+
+// --- Сводка плана для списка контейнеров (с учётом окна по умолчанию) ---
+Function PlanText(Containers: ArrayList): String;
+Begin
+	Return PlanSummary(BuildPlanInfosForContainers(Containers));
+End Function PlanText;
+
+// --- Построить и применить план для списка контейнеров ---
+Function PlanAndApply(Containers: ArrayList): Integer;
+Var
+	Infos: ArrayList;
+Begin
+	Infos := CollectTaskInfos(Containers);
+	BuildPlan(Infos, GetPlanWindowStart, GetPlanWindowEnd, PLAN_QUEUES);
+	Return ApplyPlan(Infos);
+End Function PlanAndApply;
+
+// ===========================================================================
+// Планирование с учётом ЗАПРЕЩЁННЫХ ОКОН (недоступность системы)
+// Окна передаёт вызывающий код (формы/диспетчер): TaskPlanner не зависит от модуля
+// UnavailabilityStore, поэтому список окон собирается из записей недоступности на форме.
+// ===========================================================================
+
+// --- Запрещённое окно: внутрь него старты не назначаются ---
+Class CPlanWindow: Object
+	Public StartDt: DateTime;       // начало недоступности (система выключена/недоступна)
+	Public EndDt: DateTime;         // окончание недоступности
+End Class CPlanWindow;
+
+// --- Сдвинуть время из запрещённых окон (защита от зацикливания — 100 шагов) ---
+Function ShiftOutOfWindows(T: DateTime; Windows: ArrayList): DateTime;
+Var
+	W: CPlanWindow;
+	Res: DateTime;
+	I, Guard: Integer;
+	Moved: Boolean;
+Begin
+	Res := T;
+	If IsNull(Windows) Then
+		Return Res;
+	End If;
+	Guard := 0;
+	Moved := True;
+	While Moved And (Guard < 100) Do
+		Moved := False;
+		For I := 0 To Windows.Count - 1 Do
+			W := Windows.Item(I) As CPlanWindow;
+			If (Res >= W.StartDt) And (Res < W.EndDt) Then
+				Res := W.EndDt;              // переносим на момент окончания простоя
+				Moved := True;
+			End If;
+		End For;
+		Guard := Guard + 1;
+	End While;
+	Return Res;
+End Function ShiftOutOfWindows;
+
+// --- План с учётом запрещённых окон: раскладка как обычно, затем старты выносятся из окон ---
+Function BuildPlanAvoiding(Infos: ArrayList; WindowStart: DateTime; WindowEnd: DateTime; Queues: Integer; Windows: ArrayList): Boolean;
+Var
+	Info: CTaskInfo;
+	I: Integer;
+Begin
+	If Not BuildPlan(Infos, WindowStart, WindowEnd, Queues) Then
+		Return False;
+	End If;
+	For I := 0 To Infos.Count - 1 Do
+		Info := Infos.Item(I) As CTaskInfo;
+		Info.PlannedStart := ShiftOutOfWindows(Info.PlannedStart, Windows);
+	End For;
+	Return True;
+End Function BuildPlanAvoiding;
+
+// --- Текстовая сводка плана с учётом запрещённых окон (список контейнеров) ---
+// Старты, вынесенные из окна простоя, видны в сводке как обычные (позже окна планирования).
+Function PlanTextAvoiding(Containers: ArrayList; Windows: ArrayList): String;
+Var
+	Infos: ArrayList;
+Begin
+	Infos := CollectTaskInfos(Containers);
+	BuildPlanAvoiding(Infos, GetPlanWindowStart, GetPlanWindowEnd, PLAN_QUEUES, Windows);
+	Return PlanSummary(Infos);
+End Function PlanTextAvoiding;
+
+// --- Построить и применить план с учётом запрещённых окон (список контейнеров) ---
+Function PlanAndApplyAvoiding(Containers: ArrayList; Windows: ArrayList): Integer;
+Var
+	Infos: ArrayList;
+Begin
+	Infos := CollectTaskInfos(Containers);
+	BuildPlanAvoiding(Infos, GetPlanWindowStart, GetPlanWindowEnd, PLAN_QUEUES, Windows);
+	Return ApplyPlan(Infos);
+End Function PlanAndApplyAvoiding;
+

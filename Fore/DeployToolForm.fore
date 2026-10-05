@@ -1,0 +1,1712 @@
+// ID: DEPLOYTOOL  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма-инструмент ДЕПЛОЯ кода проекта в репозиторий Fore (Foresight Analytics Platform).
+//
+// Что делает инструмент:
+//   1) выбираете РОДИТЕЛЬСКУЮ ПАПКУ деплоя в репозитории (или корень репозитория);
+//   2) выбираете ЛОКАЛЬНУЮ ПАПКУ с файлами .fore (например f:\Scheduler Tasks\Fore);
+//   3) «Создать сборку и залить модули» — в репозитории создаётся СБОРКА (класс KE_CLASS_ASSEMBLY),
+//      в неё подключаются модули/формы из файлов .fore, а сборке ставятся «Ссылки сборок» платформы.
+//      Повторный запуск ОБНОВЛЯЕТ текст уже созданных модулей (идемпотентно), ничего не дублируя.
+//
+// Используемый API (по документации проекта: KeSom/ModIo, REFERENCE §5.x):
+//   MB.CreateCreateInfo; CrInfo.ClassId/Id/Name/Parent; MB.CreateObject(CrInfo).Edit As IModule;
+//   IModule.Text (текст модуля), IModule.Modified, (Modul As IMetabaseObject).Save;
+//   IAssembly.References (подключённые сборки строкой «Metabase;Db»);
+//   Directory.GetFiles, File.OpenTextReader (ITextReader.ReadToEnd), Path.GetDirectoryName/Combine;
+//   MetabaseObjectClass.KE_CLASS_FOLDER = 0, KE_CLASS_MODULE = 1537, KE_CLASS_FORM = 1538,
+//   KE_CLASS_ASSEMBLY = 1539.
+//
+// ВАЖНО: сама форма-инструмент создаётся на стенде ОДИН раз вручную (вставить код, привязать
+// OnCreate → FormOnCreate, добавить в «Ссылки сборок»: Forms, Ui, Metabase, ExtCtrls, System,
+// Collections, Io, Fore — если компилятор не найдёт `IModule`/`IAssembly`/`ITextReader`, добавьте ту
+// системную сборку, которую подскажет справка стенда).
+// Если имена контролов на вашей форме другие — копируйте ТОЛЬКО тела обработчиков.
+
+// --- Файл деплоя: текст, разобранный Id и решение «обновлять/создавать» ---
+Class CDeployFile: Object
+	Public FullName: String;                     // полный путь локального файла
+	Public BaseName: String;                     // имя без пути и расширения (базовый Id)
+	Public Text: String;                         // текст файла (после всех замен)
+	Public NewId: String;                        // итоговый Id объекта (исходный или копия)
+	Public Existing: IMetabaseObjectDescriptor;  // объект для обновления (Null — создавать)
+	Public IsForm: Boolean;
+	Public Failed: Boolean;                      // разбор не удался (Id копии занят и т. п.)
+	Public IsEmpty: Boolean;                     // файл пуст (0 байт / только пробелы) — пропускается, это НЕ ошибка
+	Public Refs: String;                         // «ссылки сборок» для ЭТОГО файла (из шапки «// REFS: …»)
+End Class CDeployFile;
+
+// --- Переименование класса формы: старое → новое (для автозамены по всем модулям) ---
+Class CClassName: Object
+	Public Old: String;
+	Public New_: String;
+End Class CClassName;
+
+Class DEPLOYTOOLForm: Form
+	// --- настройки инструмента ---
+	DEFAULT_REFS: String;      // «Ссылки сборок» по умолчанию (через «;»)
+	DEPLOY_CRLF: String;       // перевод строки для журнала/сообщений
+	DEPLOY_LF: String;         // перевод строки «только LF» — для сверки текстов при самопроверке записи
+	DEPLOY_CR: String;         // «только CR» — для приведения переводов строк к CRLF при чтении файла
+	EVENT_KINDS: Array;        // распознаваемые события формы (по суффиксу имени обработчика)
+	REF_KINDS: Array;          // правила распознавания «ссылок сборок» по коду: «Сборка|ключевые слова»
+
+	// --- поля формы ---
+	TargetFolder: IMetabaseObjectDescriptor;   // выбранная папка репозитория (Null — корень)
+	TargetPathLabel: Label;                    // подпись «Папка деплоя в репозитории: …»
+	LocalPathEdit: EditBox;
+	AssemblyIdEdit: EditBox;
+	RefsEdit: EditBox;
+	LogMemo: Memo;
+	BtnPickTarget: Button;
+	BtnRootTarget: Button;
+	BtnBrowseLocal: Button;
+	BtnDeploy: Button;
+	BtnDryRun: Button;                         // «Пробный прогон»: показать, что будет сделано
+	BtnExport: Button;                         // «Выгрузить в файлы»: копия сборки в локальную папку
+	BtnCopy: Button;
+	BtnBindEvents: Button;                     // «Привязать события форм сборки»: OnCreate и др. — кодом
+	DeployOpenDialog: MetabaseOpenDialog;      // выбор папки репозитория
+	DeployFileDialog: FileOpenDialog;          // выбор локальной папки (берём папку файла)
+	Map_: SortedList;
+	LayoutK: Double;
+	LastCreated: Boolean;      // результат последнего Upsert*: True — объект создан, False — обновлён
+	DryRun: Boolean;           // пробный прогон: только отчёт, никаких изменений в репозитории
+	LastReadEmpty: Boolean;    // результат последнего ReadTextFile: True — файл пуст (0 байт), а не ошибка
+	LastReplaceCount: Integer; // сколько замен сделал последний ReplaceIdent (для журнала)
+	CopySuffixEdit: EditBox;   // суффикс для Id копии (когда объект есть в ДРУГОЙ папке)
+	LastNewId: String;         // Id, с которым работать: исходный или «исходный + суффикс» (копия)
+	LastCopySource: IMetabaseObjectDescriptor; // объект-источник, если для файла выбрано «создать копию»
+	LastResolveFailed: Boolean; // True — разобраться не удалось (Id копии занят) → файл пропускаем
+	CopyChoiceAsked: Boolean;  // вопрос «обновить / копия» задан в этом запуске
+	CopyChoiceCopy: Boolean;   // решение пользователя на этот запуск: True — делать копии
+
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		LayoutK := 1.0;
+		DEFAULT_REFS := "Forms;Ui;Metabase;ExtCtrls;System;Collections;Io;Fore";
+		DEPLOY_CRLF := #13 + #10;
+		DEPLOY_LF := #10;
+		DEPLOY_CR := #13;
+		EVENT_KINDS := New Variant[6];
+		EVENT_KINDS[0] := "OnCreate";
+		EVENT_KINDS[1] := "OnShow";
+		EVENT_KINDS[2] := "OnHide";
+		EVENT_KINDS[3] := "OnClose";
+		EVENT_KINDS[4] := "OnCommand";
+		EVENT_KINDS[5] := "OnActivate";
+		// --- Распознавание «ссылок сборок» по коду модуля (что за модули подключены) ---
+		// Формат правила: «Сборка|ключевое слово;ключевое слово;…». Поиск без учёта регистра, простым
+		// вхождением — лишняя ссылка не мешает, а пропущенная ломает сборку. Наборы подобраны по
+		// фактическому коду проекта и справке (там, где удалось — по документации самой сборки):
+		//   Metabase  — объекты метабазы, безопасность;      Fore      — задачи планировщика, контейнер задач;
+		//   Forms     — визуальные компоненты (дизайнер форм); ExtCtrls  — компоненты доступа к данным;
+		//   Ui        — платформа как Windows-приложение;      Collections — списки, словари, очереди, стеки;
+		//   IO        — файлы и потоки;                        Dal / Db  — драйвер СУБД, реляционные объекты;
+		//   Net       — сеть и почта;                          System    — базовые типы.
+		REF_KINDS := New Variant[12];
+		REF_KINDS[0] := "Metabase|MetabaseClass;MetabaseObject;IMetabase;IModule;IForm;IAssembly;ISecurityConnection;IConnectionTransaction";
+		REF_KINDS[1] := "Fore|IScheduledTask;IScheduledTasks;ScheduledTask;IExecuteSubScheduledTask;ITaskContainer;IMetabaseDialogClassFilter";
+		REF_KINDS[2] := "Db|IDatabaseInstance;IDatasetInstance;DatabaseInstance;IDbTable;IRelation";
+		REF_KINDS[3] := "Dal|IDalCommand;IDalCursor;IDalConnection;IDalDataSet;IDalQuery;Dal.";
+		REF_KINDS[4] := "Forms|Button;EditBox;Memo;Label;GroupBox;Panel;ScrollBox;CheckBox;ComboBox;ListBox;ListView;DateTimePicker;PopupMenu;MenuButton;Timer;ProgressBar;TabSheet;FileOpenDialog;ImageList;IControl;ICheckBox;IComboBox;IListBox;IListView;IMemo;IPopupMenu;IProgressBar;ITimer;DateTimePickerKind;ListViewStyle;ControlScrollStyle;TextAlignment";
+		REF_KINDS[5] := "ExtCtrls|MetabaseListView;MetabaseTreeList;MetabaseOpenDialog;IMetabaseListViewItem;IMetabaseDialogMetaclassFilter;FindByDescriptor";
+		REF_KINDS[6] := "Ui|WinApplication;IWin32Window;IFormControl;IUiCommandTarget;IApplicationWindows;IUiWindow";
+		REF_KINDS[7] := "Collections|ArrayList;SortedList;IStringList;StringList;Queue;Stack;Hashtable;IList";
+		REF_KINDS[8] := "IO|File.;Path.;Directory.;ITextReader;ITextWriter;CodePage;IBinaryReader;IBinaryWriter;FileStream";
+		REF_KINDS[9] := "Net|INetSmtpClient;SmtpClient;IHttpClient;INetHttp";
+		REF_KINDS[10] := "System|DateTime;TimeSpan;Debug.;String.;Double.;Exception";
+		REF_KINDS[11] := "Xml|IXmlDom;XmlDom;IXmlDomDocument;IXmlDomElement;IXmlDomNode";
+		Self.Width := Double.RoundInt(980 * LayoutK);
+		Self.Height := Double.RoundInt(620 * LayoutK);
+		CreateFormComponents;
+		WriteLog("Инструмент деплоя готов.");
+		WriteLog("1) «Выбрать папку в репозитории…» — куда положить сборку (или «Корень репозитория»).");
+		WriteLog("2) «Обзор…» — локальная папка с файлами .fore (путь можно вписать вручную).");
+		WriteLog("3) «Создать сборку и залить модули» — создать сборку и залить/обновить модули и формы.");
+	End Sub FormOnCreate;
+
+	// --- Контролы: динамическую часть создаёт фабрика по описанию экрана ---
+	Sub CreateFormComponents;
+	Var
+		Ctl: Button;
+	Begin
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), LayoutK);
+		Try
+			TargetPathLabel := UiFind(Map_, "LblTargetPath");
+			LocalPathEdit := UiFind(Map_, "LocalPathEdit");
+			AssemblyIdEdit := UiFind(Map_, "AssemblyIdEdit");
+			RefsEdit := UiFind(Map_, "RefsEdit");
+			LogMemo := UiFind(Map_, "LogMemo");
+			CopySuffixEdit := UiFind(Map_, "CopySuffixEdit");
+			BtnPickTarget := UiFind(Map_, "BtnPickTarget");
+			BtnRootTarget := UiFind(Map_, "BtnRootTarget");
+			BtnBrowseLocal := UiFind(Map_, "BtnBrowseLocal");
+			BtnDeploy := UiFind(Map_, "BtnDeploy");
+			BtnCopy := UiFind(Map_, "BtnCopy");
+		Except On e: Exception Do
+			Debug.WriteLine("Деплой: контролы не получены из карты фабрики — " + e.Message);
+		End Try;
+		If IsNull(DeployOpenDialog) Then
+			DeployOpenDialog := New MetabaseOpenDialog.Create;   // невизуальный компонент
+		End If;
+		If IsNull(DeployFileDialog) Then
+			DeployFileDialog := New FileOpenDialog.Create;       // невизуальный компонент
+		End If;
+		Ctl := UiFind(Map_, "BtnPickTarget") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := PickTargetOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRootTarget") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := RootTargetOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnBrowseLocal") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := BrowseLocalOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnDeploy") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := DeployOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnDryRun") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := DryRunOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnExport") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := ExportOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnBindEvents") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := BindEventsOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnCopy") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := CopyOnClick;
+		End If;
+		If Not IsNull(LogMemo) Then
+			Try
+				LogMemo.ReadOnly := True;
+				LogMemo.WordWrap := True;
+				LogMemo.ScrollBars := ControlScrollStyle.Both;
+			Except On e: Exception Do
+				Debug.WriteLine("Деплой: настройка Memo — " + e.Message);
+			End Try;
+		End If;
+		If Not IsNull(AssemblyIdEdit) Then
+			AssemblyIdEdit.Text := "UNVAIL_ASSEMBLY";   // имя сборки в репозитории
+		End If;
+		If Not IsNull(RefsEdit) Then
+			RefsEdit.Text := DEFAULT_REFS;
+		End If;
+		If Not IsNull(CopySuffixEdit) Then
+			CopySuffixEdit.Text := "_COPY";   // Id копии: «<Имя файла>_COPY» (если объект занят в другой папке)
+		End If;
+		If Not IsNull(TargetPathLabel) Then
+			TargetPathLabel.Text := "(корень репозитория)";
+		End If;
+	End Sub CreateFormComponents;
+
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"LABEL;LblTarget;Папка деплоя в репозитории:;16;16;300;20;" + #13 + #10
+			+ "LABEL;LblTargetPath;;16;40;520;20;" + #13 + #10
+			+ "BUTTON;BtnPickTarget;Выбрать папку в репозитории…;546;36;250;28;PickTargetOnClick" + #13 + #10
+			+ "BUTTON;BtnRootTarget;Корень репозитория;804;36;160;28;RootTargetOnClick" + #13 + #10
+			+ "LABEL;LblLocal;Локальная папка с файлами .fore:;16;80;400;20;" + #13 + #10
+			+ "EDIT;LocalPathEdit;;16;104;760;28;" + #13 + #10
+			+ "BUTTON;BtnBrowseLocal;Обзор…;784;104;180;28;BrowseLocalOnClick" + #13 + #10
+			+ "LABEL;LblAsm;Имя сборки в репозитории:;16;148;300;20;" + #13 + #10
+			+ "EDIT;AssemblyIdEdit;;16;172;300;28;" + #13 + #10
+			+ "LABEL;LblRefs;Ссылки сборок (через точку с запятой):;336;148;400;20;" + #13 + #10
+			+ "EDIT;RefsEdit;;336;172;628;28;" + #13 + #10
+			+ "LABEL;LblCopy;Суффикс для копий (когда объект есть в другой папке):;16;208;460;20;" + #13 + #10
+			+ "EDIT;CopySuffixEdit;;16;232;300;28;" + #13 + #10
+			+ "BUTTON;BtnDeploy;Создать сборку и залить модули;16;272;360;32;DeployOnClick" + #13 + #10
+			+ "BUTTON;BtnDryRun;Пробный прогон;386;272;220;32;DryRunOnClick" + #13 + #10
+			+ "BUTTON;BtnExport;Выгрузить в файлы;616;272;180;32;ExportOnClick" + #13 + #10
+			+ "BUTTON;BtnCopy;Копировать отчёт;806;272;158;32;CopyOnClick" + #13 + #10
+			+ "MEMO;LogMemo;;16;312;948;256;" + #13 + #10
+			+ "BUTTON;BtnBindEvents;Привязать события форм сборки;16;576;420;30;BindEventsOnClick";
+	End Function ScreenSpecText;
+
+	// ===========================================================================
+	// Журнал работы инструмента
+	// ===========================================================================
+	Sub WriteLog(Line: String);
+	Begin
+		Debug.WriteLine("Деплой: " + Line);
+		If Not IsNull(LogMemo) Then
+			Try
+				LogMemo.Lines.Add(Line);
+			Except On e: Exception Do
+				Debug.WriteLine("Деплой: журнал недоступен — " + e.Message);
+			End Try;
+		End If;
+	End Sub WriteLog;
+
+	Sub CopyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Try
+			LogMemo.SelectAll;
+			LogMemo.CopyToClipboard;
+			WinApplication.InformationBox("Отчёт скопирован в буфер обмена");
+		Except On e: Exception Do
+			WinApplication.InformationBox("Не удалось скопировать отчёт: " + e.Message);
+		End Try;
+	End Sub CopyOnClick;
+
+	// --- Папка деплоя в репозитории: диалог с фильтром «Папка» ---
+	Sub PickTargetOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Filter: IMetabaseDialogClassFilter;
+		Cont: IMetabaseObjectDescriptor;
+	Begin
+		Try
+			Filter := New MetabaseDialogClassFilter.Create;
+			Filter.ObjectClass := MetabaseObjectClass.KE_CLASS_FOLDER;
+			Filter.Description := "Папка репозитория";
+			DeployOpenDialog.Filters.Clear;
+			DeployOpenDialog.Filters.AddFilter(Filter);
+			DeployOpenDialog.FilterIndex := 0;
+			DeployOpenDialog.MultiSelect := False;
+			If DeployOpenDialog.Execute(Self) Then
+				Cont := DeployOpenDialog.Object;
+				If Not IsNull(Cont) Then
+					TargetFolder := Cont;
+					TargetPathLabel.Text := Cont.Name + " (" + Cont.Id + ")";
+					WriteLog("Папка деплоя: " + Cont.Id + " («" + Cont.Name + "»)");
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Деплой: выбор папки — " + e.Message);
+			WinApplication.InformationBox("Не удалось выбрать папку: " + e.Message
+				+ DEPLOY_CRLF + "Можно нажать «Корень репозитория» — сборка будет создана в корне.");
+		End Try;
+	End Sub PickTargetOnClick;
+
+	Sub RootTargetOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		TargetFolder := Null;
+		TargetPathLabel.Text := "(корень репозитория)";
+		WriteLog("Папка деплоя: корень репозитория");
+	End Sub RootTargetOnClick;
+
+	// --- Локальная папка с .fore: выбор через файловый диалог (берём папку выбранного файла) ---
+	Sub BrowseLocalOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Dir: String;
+	Begin
+		Try
+			DeployFileDialog.Filter := "Модули Fore (*.fore)|*.fore|Все файлы (*.*)|*.*";
+			DeployFileDialog.Title := "Выберите любой .fore в папке проекта — папка подставится";
+			// ⚠ у файлового диалога Execute вызывается БЕЗ параметров и БЕЗ скобок (проверено на стенде)
+			If DeployFileDialog.Execute Then
+				Dir := "";
+				Try
+					Dir := Path.GetDirectoryName(DeployFileDialog.FileName);
+				Except On e: Exception Do
+					Dir := "";
+				End Try;
+				If Dir <> "" Then
+					LocalPathEdit.Text := Dir;
+					WriteLog("Локальная папка: " + Dir);
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Деплой: выбор локальной папки — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть диалог: " + e.Message
+				+ DEPLOY_CRLF + "Впишите путь к папке вручную (например f:\Scheduler Tasks\Fore).");
+		End Try;
+	End Sub BrowseLocalOnClick;
+
+	// ===========================================================================
+	// Точки входа кнопок
+	// ===========================================================================
+	Sub DeployOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		RunDeploy(False);                          // реальный деплой
+	End Sub DeployOnClick;
+
+	Sub DryRunOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		RunDeploy(True);                           // пробный прогон: только отчёт
+	End Sub DryRunOnClick;
+
+	// --- Выгрузка содержимого сборки в локальную папку (резервная копия / сверка со стендом) ---
+	Sub ExportOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		AsmId, Dir: String;
+		AsmDesc: IMetabaseObjectDescriptor;
+	Begin
+		AsmId := String.Trim(AssemblyIdEdit.Text);
+		If AsmId = "" Then
+			WinApplication.InformationBox("Укажите «Имя сборки в репозитории» — её содержимое и выгружается.");
+			Return;
+		End If;
+		AsmDesc := FindAssemblyInFolder(AsmId);
+		If IsNull(AsmDesc) Then
+			WinApplication.InformationBox("Сборка «" + AsmId + "» в выбранной папке не найдена — выгружать нечего.");
+			Return;
+		End If;
+		Try
+			DeployFileDialog.Filter := "Все файлы (*.*)|*.*";
+			DeployFileDialog.Title := "Выберите ЛЮБОЙ файл в папке, куда выгрузить содержимое сборки";
+			If Not DeployFileDialog.Execute Then
+				WriteLog("Выгрузка отменена: папка не выбрана.");
+				Return;
+			End If;
+			Dir := "";
+			Try
+				Dir := Path.GetDirectoryName(DeployFileDialog.FileName);
+			Except On e: Exception Do
+				Dir := "";
+			End Try;
+			If Dir = "" Then
+				WinApplication.InformationBox("Папка выгрузки не определилась — повторите выбор.");
+				Return;
+			End If;
+			ExportAssemblyToFolder(AsmDesc, Dir);
+		Except On e: Exception Do
+			Debug.WriteLine("Деплой: выгрузка сборки — " + e.Message);
+			WinApplication.InformationBox("Не удалось открыть диалог: " + e.Message);
+		End Try;
+	End Sub ExportOnClick;
+
+	// --- «Привязать события форм сборки»: проставить привязки (класс + COMPONENT.EVENTS) по коду ---
+	Sub BindEventsOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		AsmId: String;
+		AsmDesc: IMetabaseObjectDescriptor;
+		Descs: IMetabaseObjectDescriptors;
+		Desc: IMetabaseObjectDescriptor;
+		Modul: IModule;
+		Ok, Bad, Total: Integer;
+	Begin
+		AsmId := String.Trim(AssemblyIdEdit.Text);
+		If AsmId = "" Then
+			WinApplication.InformationBox("Укажите «Имя сборки в репозитории» — у её форм и будут привязаны события.");
+			Return;
+		End If;
+		AsmDesc := FindAssemblyInFolder(AsmId);
+		If IsNull(AsmDesc) Then
+			WinApplication.InformationBox("Сборка «" + AsmId + "» в выбранной папке не найдена.");
+			Return;
+		End If;
+		WriteLog("--- Привязка событий форм сборки «" + AsmId + "» (класс + события из XML формы) ---");
+		Ok := 0;
+		Bad := 0;
+		Total := 0;
+		Try
+			Descs := AsmDesc.Children;
+		Except On e: Exception Do
+			WriteLog("! Состав сборки не получен: " + e.Message);
+			Return;
+		End Try;
+		For Each Desc In Descs Do
+			If Desc.ClassId = MetabaseObjectClass.KE_CLASS_FORM Then
+				Total := Total + 1;
+				WriteLog("Форма «" + Desc.Id + "»:");
+				Try
+					Modul := Desc.Edit As IModule;
+					If PatchFormContent(Desc, Modul.Text) Then
+						Ok := Ok + 1;
+					Else
+						Bad := Bad + 1;
+					End If;
+				Except On e: Exception Do
+					Bad := Bad + 1;
+					WriteLog("  ⚠ код формы не прочитан: " + e.Message);
+				End Try;
+			End If;
+		End For;
+		WriteLog("Привязка событий: форм в сборке — " + Total.ToString + ", обработано — " + Ok.ToString
+			+ ", с проблемами — " + Bad.ToString + ".");
+		WinApplication.InformationBox("Привязка событий форм завершена." + DEPLOY_CRLF
+			+ "Сборка: " + AsmId + DEPLOY_CRLF
+			+ "Форм в сборке: " + Total.ToString + DEPLOY_CRLF
+			+ "Обработано: " + Ok.ToString + DEPLOY_CRLF
+			+ "С проблемами: " + Bad.ToString + DEPLOY_CRLF + DEPLOY_CRLF
+			+ "Подробности — в журнале на форме.");
+	End Sub BindEventsOnClick;
+
+	// ===========================================================================
+	// ГЛАВНОЕ ДЕЙСТВИЕ: создать/обновить сборку и залить в неё модули/формы
+	// ===========================================================================
+	Sub RunDeploy(IsDryRun: Boolean);
+	Var
+		Files: Array Of String;
+		AsmDesc: IMetabaseObjectDescriptor;
+		Items: ArrayList;
+		Renames: ArrayList;
+		Item: CDeployFile;
+		R: CClassName;
+		AsmId, AsmName, LocalPath, Refs, Suffix, Msg, Cur, Desired, K, IdOverride: String;
+		Done, Updated, Failed, Empty, I: Integer;
+	Begin
+		DryRun := IsDryRun;
+		LocalPath := String.Trim(LocalPathEdit.Text);
+		AsmId := String.Trim(AssemblyIdEdit.Text);
+		Refs := String.Trim(RefsEdit.Text);
+		If LocalPath = "" Then
+			WinApplication.InformationBox("Укажите локальную папку с файлами .fore");
+			Return;
+		End If;
+		If AsmId = "" Then
+			WinApplication.InformationBox("Укажите имя сборки в репозитории (например UNVAIL_ASSEMBLY)");
+			Return;
+		End If;
+		WriteLog("--- Деплой: " + LocalPath + " → сборка «" + AsmId + "» ---");
+		If DryRun Then
+			WriteLog("РЕЖИМ: пробный прогон — в репозиторий ничего не записывается.");
+		End If;
+		AsmName := "Сборка " + AsmId;
+		CopyChoiceAsked := False;                            // решение «обновить/копия» — на этот запуск
+		Suffix := String.Trim(CopySuffixEdit.Text);
+		If Suffix = "" Then
+			Suffix := "_COPY";
+		End If;
+		WriteLog("Копии (если объект занят в другой папке) будут создаваться с Id «<имя>" + Suffix + "».");
+		// Сборка с таким же именем уже лежит В ВЫБРАННОЙ ПАПКЕ? Тогда спрашиваем пользователя:
+		// обновить код существующих модулей и создать те, которых в сборке ещё нет.
+		AsmDesc := FindAssemblyInFolder(AsmId);
+		If Not IsNull(AsmDesc) Then
+			Msg := "В выбранной папке уже есть сборка «" + AsmId + "»." + DEPLOY_CRLF + DEPLOY_CRLF
+				+ "Обновить код существующих модулей / форм и создать новые файлы,"
+				+ DEPLOY_CRLF + "которых в сборке ещё нет?" + DEPLOY_CRLF + DEPLOY_CRLF
+				+ "«Отмена» — деплой остановится, ничего не будет изменено.";
+			If Not WinApplication.ConfirmationBox(Msg) Then
+				WriteLog("Пользователь отказался обновлять существующую сборку — деплой остановлен.");
+				WinApplication.InformationBox("Деплой отменён: в папке уже есть сборка «" + AsmId + "»."
+					+ DEPLOY_CRLF + "Чтобы создать новую сборку, измените её имя.");
+				Return;
+			End If;
+			WriteLog("Обновляем существующую сборку «" + AsmId + "»: код модулей — обновить,"
+				+ " отсутствующих в сборке — создать.");
+		Else
+			If DryRun Then
+				WriteLog("[пробный прогон] создал бы сборку «" + AsmId + "» в выбранной папке.");
+				AsmDesc := Null;                            // в пробном прогоне ничего не создаём
+			Else
+				AsmDesc := EnsureAssembly(AsmId, AsmName);  // сборки нет — создаём в выбранной папке
+				If IsNull(AsmDesc) Then
+					WriteLog("! Сборка не создана — деплой остановлен.");
+					Return;
+				End If;
+			End If;
+		End If;
+		If DryRun Then
+			WriteLog("[пробный прогон] ссылки сборки были бы: " + Refs);
+		Else
+			ApplyAssemblyRefs(AsmDesc, Refs);
+		End If;
+
+		Files := Null;
+		Try
+			Files := Directory.GetFiles(LocalPath, "*.fore").ToArray;
+		Except On e: Exception Do
+			Files := Null;
+			WriteLog("! Папка не прочитана: " + e.Message);
+		End Try;
+		If IsNull(Files) Then
+			WriteLog("! Файлы .fore не найдены (или нет доступа к папке).");
+			Return;
+		End If;
+		WriteLog("Найдено файлов: " + Files.Length.ToString);
+		// --- ПРОХОД 1: читаем файлы, разбираем Id (вопрос «обновить/копия» задаётся здесь, один раз)
+		//     и собираем переименования классов форм (Id изменился → класс тоже меняется) ---
+		Items := New ArrayList.Create;
+		Renames := New ArrayList.Create;
+		For I := 0 To Files.Length - 1 Do
+			Item := New CDeployFile.Create;
+			Item.FullName := Files[I];
+			Item.BaseName := FileBaseName(Item.FullName);
+			Item.Text := ReadTextFile(Item.FullName);
+			Item.IsEmpty := LastReadEmpty;                     // пустой файл — не ошибка, просто пропускаем
+			If (Not Item.IsEmpty) And (Item.Text <> "") And (String.Trim(Item.Text) = "") Then
+				Item.IsEmpty := True;                          // файл из одних пробелов/переводов строк
+				WriteLog("Файл «" + Item.BaseName + ".fore» пуст (только пробелы) — пропущен");
+			End If;
+			Item.Failed := Item.Text = "";
+			If Not Item.Failed Then
+				IdOverride := IdFromText(Item.Text);              // «// ID: DEPLOYTOOL» в шапке файла
+				If IdOverride <> "" Then
+					WriteLog("Файл «" + Item.BaseName + ".fore»: идентификатор объекта взят из шапки файла: «"
+						+ IdOverride + "»");
+					Item.BaseName := IdOverride;
+				End If;
+				Item.IsForm := Item.Text.IndexOf(": Form") >= 0;   // «Class SCHEDULERForm: Form»
+				// Ссылки сборок: распознаём по коду + директива «// REFS: …» в шапке + поле формы.
+				Item.Refs := MergeRefs(MergeRefs(RefsForText(Item.Text), RefsFromText(Item.Text)), Refs);
+				WriteLog("   ссылки сборок для «" + Item.BaseName + "»: " + Item.Refs);
+				Item.Existing := ResolveExisting(AsmDesc, Item.BaseName);
+				Item.NewId := LastNewId;
+				Item.Failed := LastResolveFailed;
+			End If;
+			Items.Add(Item);
+		End For;
+		For I := 0 To Items.Count - 1 Do
+			Item := Items.Item(I) As CDeployFile;
+			If (Not Item.Failed) And Item.IsForm Then
+				Cur := FormClassNameIn(Item.Text);
+				Desired := FormClassNameFor(Item.NewId);
+				If (Cur <> "") And (Cur <> Desired) Then
+					R := New CClassName.Create;
+					R.Old := Cur;
+					R.New_ := Desired;
+					Renames.Add(R);
+					WriteLog("Переименование класса формы: «" + Cur + "» → «" + Desired
+						+ "» (объект «" + Item.NewId + "»)");
+				End If;
+			End If;
+		End For;
+		If Renames.Count > 0 Then
+			WriteLog("Автозамена: переименований " + Renames.Count.ToString
+				+ " — правки применяются ко ВСЕМ импортируемым модулям этого запуска.");
+		End If;
+		// --- ПРОХОД 2: применяем замены ко всем текстам и заливаем ---
+		Done := 0;
+		Updated := 0;
+		Failed := 0;
+		Empty := 0;                                // сколько файлов пропущено как пустые/непрочитанные
+		For I := 0 To Items.Count - 1 Do
+			Item := Items.Item(I) As CDeployFile;
+			If Item.Failed Then
+				If Item.IsEmpty Then                   // пустой файл — не ошибка, просто пропуск
+					Empty := Empty + 1;
+				Else
+					Failed := Failed + 1;
+				End If;
+			Else
+				If (Not Item.IsForm) And (Item.NewId <> Item.BaseName) Then
+					WriteLog("⚠ Копия МОДУЛЯ «" + Item.BaseName + "» → «" + Item.NewId + "»: имена классов и"
+						+ " функций внутри копии те же, что в оригинале — если оба объекта попадут в ОДНУ"
+						+ " сборку, будет конфликт имён (класс формы-копии переименовывается, модуль — нет)");
+				End If;
+				If Renames.Count > 0 Then
+					WriteLog("Файл «" + Item.BaseName + "»:");
+					Item.Text := ApplyRenames(Item.Text, Renames);
+				End If;
+				If DryRun Then
+					K := "модуль";
+					If Item.IsForm Then
+						K := "форма";
+					End If;
+					WriteLog("  [пробный прогон] " + ActionText(Item.Existing) + " " + K
+						+ " «" + Item.NewId + "»" + RefsSuffix(Item.Refs));
+					If Item.IsForm Then
+						WriteLog("     связи событий формы (привязываются в Инспекторе формы):"
+							+ FormEventBindings(Item.Text));
+					End If;
+					Done := Done + 1;
+					If Not IsNull(Item.Existing) Then
+						Updated := Updated + 1;
+					End If;
+				Else
+					If Item.IsForm Then
+						If UpsertForm(AsmDesc, Item.NewId, Item.Text, Item.Existing, Item.Refs) Then
+							Done := Done + 1;
+							If Not LastCreated Then
+								Updated := Updated + 1;
+							End If;
+						Else
+							Failed := Failed + 1;
+						End If;
+					Else
+						If UpsertModule(AsmDesc, Item.NewId, Item.Text, Item.Existing, Item.Refs) Then
+							Done := Done + 1;
+							If Not LastCreated Then
+								Updated := Updated + 1;
+							End If;
+						Else
+							Failed := Failed + 1;
+						End If;
+					End If;
+				End If;
+			End If;
+		End For;
+		If DryRun Then
+			WriteLog("Пробный прогон: было бы обработано файлов — " + Done.ToString
+				+ " (новых: " + (Done - Updated).ToString + ", обновлено: " + Updated.ToString
+				+ "), с ошибками — " + Failed.ToString
+				+ ", пропущено пустых/непрочитанных — " + Empty.ToString + ". Изменений не вносилось.");
+		Else
+			WriteLog("Готово: залито/обновлено — " + Done.ToString
+				+ " (из них новых: " + (Done - Updated).ToString + ", обновлено: " + Updated.ToString
+				+ "), с ошибками — " + Failed.ToString
+				+ ", пропущено пустых/непрочитанных — " + Empty.ToString + ".");
+		End If;
+		If Empty > 0 Then
+			WriteLog("(пустой файл — это не ошибка: он просто не заливается, код модуля на стенде не меняется)");
+		End If;
+		If DryRun Then
+			WinApplication.InformationBox("Пробный прогон завершён — в репозиторий ничего не записано." + DEPLOY_CRLF
+				+ "Сборка: " + AsmId + DEPLOY_CRLF
+				+ "Было бы обработано файлов: " + Done.ToString + DEPLOY_CRLF
+				+ "   новых модулей/форм: " + (Done - Updated).ToString + DEPLOY_CRLF
+				+ "   обновлено существующих: " + Updated.ToString + DEPLOY_CRLF
+				+ "С ошибками: " + Failed.ToString + DEPLOY_CRLF
+				+ "Пропущено пустых/непрочитанных: " + Empty.ToString + DEPLOY_CRLF + DEPLOY_CRLF
+				+ "Что именно произошло бы — в журнале на форме («Копировать отчёт»).");
+		Else
+			WinApplication.InformationBox("Деплой завершён." + DEPLOY_CRLF
+				+ "Сборка: " + AsmId + DEPLOY_CRLF
+				+ "Всего обработано файлов: " + Done.ToString + DEPLOY_CRLF
+				+ "   новых модулей/форм: " + (Done - Updated).ToString + DEPLOY_CRLF
+				+ "   обновлено существующих: " + Updated.ToString + DEPLOY_CRLF
+				+ "С ошибками: " + Failed.ToString + DEPLOY_CRLF
+				+ "Пропущено пустых/непрочитанных: " + Empty.ToString + DEPLOY_CRLF + DEPLOY_CRLF
+				+ "Подробности — в журнале на форме («Копировать отчёт»).");
+		End If;
+	End Sub RunDeploy;
+
+	// --- «создал бы» / «обновил бы» — текст для пробного прогона ---
+	Function ActionText(Existing: IMetabaseObjectDescriptor): String;
+	Begin
+		If IsNull(Existing) Then
+			Return "создал бы";
+		End If;
+		Return "обновил бы";
+	End Function ActionText;
+
+	// --- хвост строки журнала со ссылками конкретного модуля (пусто, если их нет) ---
+	Function RefsSuffix(R: String): String;
+	Begin
+		If R = "" Then
+			Return "";
+		End If;
+		Return "  / ссылки сборок: " + R;
+	End Function RefsSuffix;
+
+	// --- Сборка с таким Id ИМЕННО В ВЫБРАННОЙ ПАПКЕ (Null — нет) ---
+	Function FindAssemblyInFolder(AsmId: String): IMetabaseObjectDescriptor;
+	Var
+		MB: IMetabase;
+		Desc, Parent: IMetabaseObjectDescriptor;
+	Begin
+		MB := MetabaseClass.Active;
+		Parent := TargetFolder;
+		If IsNull(Parent) Then
+			Parent := MB.Root;
+		End If;
+		Desc := Null;
+		Try
+			Desc := MB.ItemById(AsmId);
+		Except On e: Exception Do
+			Desc := Null;
+		End Try;
+		If IsNull(Desc) Then
+			Return Null;
+		End If;
+		Try
+			If Desc.Parent.Key = Parent.Key Then
+				WriteLog("Найдена сборка «" + AsmId + "» в выбранной папке.");
+				Return Desc;
+			End If;
+			WriteLog("⚠ Объект «" + AsmId + "» есть в репозитории, но в ДРУГОЙ папке — Id уникален,"
+				+ " сборку с таким именем создать нельзя: измените «Имя сборки в репозитории»");
+		Except On e: Exception Do
+			WriteLog("Деплой: родитель сборки «" + AsmId + "» не определился — " + e.Message);
+		End Try;
+		Return Null;
+	End Function FindAssemblyInFolder;
+
+	// --- Сборка в репозитории: найти по Id или создать в выбранной папке ---
+	Function EnsureAssembly(AsmId, AsmName: String): IMetabaseObjectDescriptor;
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		Parent: IMetabaseObjectDescriptor;
+		CrInfo: IMetabaseObjectCreateInfo;
+		MObj: IMetabaseObject;
+	Begin
+		MB := MetabaseClass.Active;
+		// Создание НОВОЙ сборки. Существующая (в любой папке) нас здесь не интересует: её наличие
+		// проверяет FindAssemblyInFolder до вызова — если Id занят где-то ещё, создать нельзя.
+		Desc := Null;
+		Try
+			Desc := MB.ItemById(AsmId);
+		Except On e: Exception Do
+			Desc := Null;
+		End Try;
+		If Not IsNull(Desc) Then
+			WriteLog("! Id сборки «" + AsmId + "» уже занят объектом вне выбранной папки —"
+				+ " создание новой сборки невозможно, измените имя («Имя сборки в репозитории»).");
+			Return Null;
+		End If;
+		Parent := TargetFolder;
+		If IsNull(Parent) Then
+			Parent := MB.Root;                       // корень репозитория
+		End If;
+		CrInfo := MB.CreateCreateInfo;
+		CrInfo.ClassId := MetabaseObjectClass.KE_CLASS_ASSEMBLY;
+		CrInfo.Id := AsmId;
+		CrInfo.Name := AsmName;
+		CrInfo.Parent := Parent;
+		MObj := MB.CreateObject(CrInfo).Edit;
+		MObj.Save;
+		WriteLog("Создана сборка «" + AsmId + "» («" + AsmName + "»).");
+		Desc := Null;
+		Try
+			Desc := MB.ItemById(AsmId);
+		Except On e: Exception Do
+			Desc := Null;
+		End Try;
+		Return Desc;
+	End Function EnsureAssembly;
+
+	// --- «Ссылки сборок» сборки: IAssembly.References (строка вида «Metabase;Db») ---
+	Sub ApplyAssemblyRefs(AsmDesc: IMetabaseObjectDescriptor; Refs: String);
+	Var
+		Asm: IAssembly;
+	Begin
+		If IsNull(AsmDesc) Or (Refs = "") Then
+			Return;
+		End If;
+		Try
+			Asm := AsmDesc.Edit As IAssembly;          // IAssembly.References — «Ссылки сборок»
+			Asm.References := Refs;
+			If Asm.Modified Then
+				(Asm As IMetabaseObject).Save;
+			End If;
+			WriteLog("Ссылки сборок: " + Refs);
+		Except On e: Exception Do
+			WriteLog("! Не удалось задать ссылки сборок: " + e.Message
+				+ " — задайте их в Инспекторе сборки вручную");
+		End Try;
+	End Sub ApplyAssemblyRefs;
+
+	// --- События, которые нужно привязать вручную: разбираем текст формы ---
+	// События ДИНАМИЧЕСКИХ контролов форма привязывает сама (`Ctl.OnClick := …` — кодом),
+	// а СОБЫТИЯ ФОРМЫ (OnCreate/OnShow/OnCommand/…) привязываются в Инспекторе формы:
+	// API привязки событий формы из кода в справке платформы нет (IForm содержит только Content
+	// и CreateFormControl). Поэтому инструмент ВЫПИСЫВАЕТ список: событие → обработчик.
+	Function FormEventBindings(Text: String): String;
+	Var
+		Rest, Line, Handler, EventName, S: String;
+		P, I: Integer;
+	Begin
+		S := "";
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			// ищем объявления «Sub <Имя>On<Событие>(Sender: Object; Args: …);»
+			If (Line.IndexOf("Sub ") = 0) And (Line.IndexOf("(Sender: Object; Args:") > 0) Then
+				Handler := String.Trim(Line.SubString(4, Line.IndexOf("(Sender: Object; Args:") - 4));
+				EventName := "";
+				For I := 0 To EVENT_KINDS.Length - 1 Do
+					If String.ToUpper(Handler).IndexOf(String.ToUpper(EVENT_KINDS[I])) > 0 Then
+						EventName := EVENT_KINDS[I];
+					End If;
+				End For;
+				If EventName <> "" Then
+					S := S + DEPLOY_CRLF + "      событие " + EventName + " → " + Handler;
+				End If;
+			End If;
+		End While;
+		Return S;
+	End Function FormEventBindings;
+
+	// --- Блок событий для XML формы: «<OnCreate FormOnCreate="100"/>…» (по коду модуля формы) ---
+	// Формат снят с реальной формы на стенде: <COMPONENT.EVENTS><OnCreate FormOnCreate="100"/></COMPONENT.EVENTS>
+	// Кавычку (Q) передаёт вызывающий — она берётся из самого XML, чтобы не зависеть от экранирования в Fore.
+	Function FormEventsXml(Text, Q: String): String;
+	Var
+		S, Rest, Line, Handler, EventName: String;
+		P, I, Num: Integer;
+	Begin
+		S := "";
+		Num := 100;                                   // нумерация как у платформы: 100, 101, 102…
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			// объявления «Sub <Имя>On<Событие>(Sender: Object; Args: …);» — те же, что в FormEventBindings
+			If (Line.IndexOf("Sub ") = 0) And (Line.IndexOf("(Sender: Object; Args:") > 0) Then
+				Handler := String.Trim(Line.SubString(4, Line.IndexOf("(Sender: Object; Args:") - 4));
+				EventName := "";
+				For I := 0 To EVENT_KINDS.Length - 1 Do
+					If String.ToUpper(Handler).IndexOf(String.ToUpper(EVENT_KINDS[I])) > 0 Then
+						EventName := EVENT_KINDS[I];
+					End If
+				End For;
+				If EventName <> "" Then
+					S := S + "<" + EventName + " " + Handler + "=" + Q + Num.ToString + Q + "/>";
+					Num := Num + 1;
+				End If;
+			End If;
+		End While;
+		Return S;
+	End Function FormEventsXml;
+
+	// --- Чтение файла целиком (Io: File.OpenTextReader → ITextReader.ReadToEnd) ---
+	// ⚠ ПУСТОЙ файл нельзя читать «в лоб»: ReadToEnd на нём выбрасывает «Достигнут конец потока».
+	// Это не ошибка деплоя, а просто пустой файл, поэтому СНАЧАЛА проверяем признак конца текста —
+	// ITextReader.Eof (справка Io: «Eof — признак окончания текста в файле»). Пустой файл помечается
+	// LastReadEmpty и пропускается (модуль на стенде не затирается пустым текстом).
+	Function ReadTextFile(FullPath: String): String;
+	Var
+		Reader: ITextReader;
+		Text, Norm: String;
+	Begin
+		Text := "";
+		LastReadEmpty := False;
+		If Not File.Exists(FullPath) Then
+			WriteLog("! Файл не найден — пропущен: " + FullPath);
+			Return "";
+		End If;
+		Try
+			Reader := File.OpenTextReader(FullPath);
+			// Кириллица: файлы проекта — UTF-8 без BOM (правило проекта), поэтому кодировку задаём явно
+			Try
+				Reader.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Деплой: кодировку чтения задать не удалось — " + e.Message);
+			End Try;
+			If Reader.Eof Then                         // файл пуст (0 байт) — читать нечего
+				LastReadEmpty := True;
+				WriteLog("Файл пуст (0 байт) — пропущен: " + FullPath);
+				Return "";
+			End If;
+			Text := Reader.ReadToEnd;                  // Close в справке не вызывается — не вызываем и мы
+		Except On e: Exception Do
+			Text := "";
+			If LastReadEmpty Then
+				WriteLog("Файл пуст — пропущен: " + FullPath);   // «конец потока» на пустом файле — не ошибка
+			Else
+				WriteLog("! Файл не прочитан: " + FullPath + " — " + e.Message);
+			End If;
+		End Try;
+		// ⚠ Переводы строк приводим к CRLF: файл может быть сохранён с LF (другим редактором),
+		// а весь разбор («// ID:», «// REFS:», события формы) ищет строки именно по CRLF.
+		Norm := String.Replace(Text, DEPLOY_CR + DEPLOY_LF, DEPLOY_LF);
+		Norm := String.Replace(Norm, DEPLOY_CR, DEPLOY_LF);
+		Norm := String.Replace(Norm, DEPLOY_LF, DEPLOY_CRLF);
+		If Norm <> Text Then
+			WriteLog("   переводы строк приведены к CRLF (в файле были LF или CR)");
+			Text := Norm;
+		End If;
+		Return Text;
+	End Function ReadTextFile;
+
+	// --- Явный идентификатор объекта из шапки файла: «// ID: DEPLOYTOOL» ---
+	// Нужен, когда идентификатор на стенде отличается от имени файла (например, объект называется
+	// DEPLOYTOOL, а файл — DeployToolForm.fore). Класс формы при этом вычисляется от ИДЕНТИФИКАТОРА:
+	// объект DEPLOYTOOL → класс DEPLOYTOOLForm (именно так его прописала сама платформа в XML формы).
+	Function IdFromText(Text: String): String;
+	Var
+		Rest, Line, S, U: String;
+		P: Integer;
+	Begin
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			U := String.ToUpper(Line);
+			If U.IndexOf("// ID:") = 0 Then
+				S := String.Trim(Line.SubString(6, Line.Length - 6));
+				P := S.IndexOf("//");                     // отрезаем хвост «// пояснение»
+				If P > 0 Then
+					S := String.Trim(S.SubString(0, P));
+				End If;
+				If S <> "" Then
+					Return S;
+				End If;
+			End If;
+		End While;
+		Return "";
+	End Function IdFromText;
+
+	// --- «// REFS: Forms;Ui;Metabase» в шапке файла → ссылки сборок ИМЕННО ЭТОГО модуля ---
+	// Ищем первую строку, в которой есть «REFS:» (регистр не важен), и берём всё до конца строки.
+	// Так у каждого файла может быть свой набор ссылок, а не один общий для всей сборки.
+	Function RefsFromText(Text: String): String;
+	Var
+		Rest, Line, S, U: String;
+		P: Integer;
+	Begin
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			U := String.ToUpper(Line);
+			If U.IndexOf("REFS:") > 0 Then
+				P := Line.IndexOf(":");
+				S := String.Trim(Line.SubString(P + 1, Line.Length - P - 1));
+				P := S.IndexOf("//");                  // отрезаем хвост «// пояснение»
+				If P > 0 Then
+					S := String.Trim(S.SubString(0, P));
+				End If;
+				If S <> "" Then
+					Return S;
+				End If;
+			End If;
+		End While;
+		Return "";
+	End Function RefsFromText;
+
+	// --- «Ссылки сборок» по коду модуля: какие сборки реально используются в тексте ---
+	// Таблица REF_KINDS (см. FormOnCreate): «Сборка|ключевые слова». Возврат, например: «Metabase;Forms;IO;System».
+	// Лишняя ссылка безвредна, а пропущенная ломает сборку — поэтому наборы намеренно широкие.
+	Function RefsForText(Text: String): String;
+	Var
+		U, Rule, Asm, Words, W, S: String;
+		I, P: Integer;
+		Hit: Boolean;
+	Begin
+		U := String.ToUpper(Text);
+		S := "";
+		For I := 0 To REF_KINDS.Length - 1 Do
+			Rule := REF_KINDS[I];
+			P := Rule.IndexOf("|");
+			Asm := Rule.SubString(0, P);
+			Words := Rule.SubString(P + 1, Rule.Length - P - 1) + ";";
+			Hit := False;
+			While (Not Hit) And (Words <> "") Do
+				P := Words.IndexOf(";");
+				If P < 0 Then
+					W := Words;
+					Words := "";
+				Else
+					W := Words.SubString(0, P);
+					Words := Words.SubString(P + 1, Words.Length - P - 1);
+				End If;
+				W := String.ToUpper(String.Trim(W));
+				If (W <> "") And (U.IndexOf(W) >= 0) Then
+					Hit := True;
+				End If;
+			End While;
+			If Hit Then
+				If S = "" Then
+					S := Asm;
+				Else
+					S := S + ";" + Asm;
+				End If;
+			End If;
+		End For;
+		If S = "" Then
+			S := "System";
+		Else
+			If S.IndexOf("System") < 0 Then
+				S := S + ";System";                        // базовая сборка — всегда
+			End If;
+		End If;
+		Return S;
+	End Function RefsForText;
+
+	// --- Объединение двух списков ссылок «A;B» и «C;D» без повторов (регистр не важен) ---
+	Function MergeRefs(A, B: String): String;
+	Var
+		S, W, Rest, Cur: String;
+		P: Integer;
+	Begin
+		S := String.Trim(A);
+		Rest := String.Trim(B);
+		While Rest <> "" Do
+			P := Rest.IndexOf(";");
+			If P < 0 Then
+				W := Rest;
+				Rest := "";
+			Else
+				W := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + 1, Rest.Length - P - 1);
+			End If;
+			W := String.Trim(W);
+			If W <> "" Then
+				Cur := ";" + String.ToUpper(S) + ";";
+				If Cur.IndexOf(";" + String.ToUpper(W) + ";") < 0 Then
+					If S = "" Then
+						S := W;
+					Else
+						S := S + ";" + W;
+					End If;
+				End If;
+			End If;
+		End While;
+		Return S;
+	End Function MergeRefs;
+
+	// --- Запись текста в файл (Io: File.OpenTextWriter + Encoding := CodePage.UTF8) ---
+	// ⚠ Кодировку ОБЯЗАТЕЛЬНО задавать ДО первой записи (пример справки Io: `TxtWriter.Encoding :=
+	// CodePage.UTF8` сразу после `OpenTextWriter`) — иначе кириллица уйдёт в системную ANSI и испортится.
+	// Ошибку установки кодировки пишем в ЖУРНАЛ (раньше было только в Debug), а после записи файл
+	// читается обратно и сверяется с исходным текстом — самопроверка кодировки прямо на стенде.
+	Function WriteTextFile(FullPath, Text: String): Boolean;
+	Var
+		TxtWriter: ITextWriter;
+		Back: String;
+	Begin
+		Try
+			TxtWriter := File.OpenTextWriter(FullPath, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;   // строго до первой записи
+			Except On e: Exception Do
+				WriteLog("⚠ Не удалось задать кодировку записи UTF-8 (" + e.Message
+					+ ") — кириллица в файле может испортиться: " + FullPath);
+			End Try;
+			TxtWriter.WriteString(Text);
+			TxtWriter.Flush;
+		Except On e: Exception Do
+			WriteLog("! Файл не записан: " + FullPath + " — " + e.Message);
+			Return False;
+		End Try;
+		// --- Самопроверка: читаем файл обратно и сверяем текст (переводы строк не учитываем) ---
+		Back := ReadTextFile(FullPath);
+		If NoLineBreaks(Back) <> NoLineBreaks(Text) Then
+			WriteLog("⚠ Файл записан, но текст при обратном чтении не совпал — вероятно, другая кодировка"
+				+ " (или UTF-8 с BOM): " + FullPath);
+			WriteLog("   Откройте файл в редакторе и сохраните как «UTF-8 без BOM», затем проверьте кириллицу.");
+			Return False;
+		End If;
+		Return True;
+	End Function WriteTextFile;
+
+	// --- Текст без переводов строк (для сверки записанного и прочитанного) ---
+	Function NoLineBreaks(S: String): String;
+	Begin
+		Return String.Replace(String.Replace(S, DEPLOY_CRLF, ""), DEPLOY_LF, "");
+	End Function NoLineBreaks;
+
+	// --- ПРИВЯЗКА СОБЫТИЙ ФОРМЫ КОДОМ: правим XML формы (IForm.Content) — класс и блок событий ---
+	// Формат XML (снят с реальной формы на стенде):
+	//   <MODULE><FORM …><COMPONENT.PROPS …><_CMP D101="DEPLOYTOOLForm"/><_CTR D-518="Заголовок"…>…
+	//     <COMPONENT.EVENTS><OnCreate FormOnCreate="100"/></COMPONENT.EVENTS>
+	//     <COMPONENT.CONTROLS/></FORM></MODULE>
+	// D101 — ИМЯ КЛАССА формы (платформа сама делает «<Id объекта> + Form»), а в COMPONENT.EVENTS —
+	// привязки «событие → обработчик». Правятся ТОЛЬКО эти два места: остальной XML не трогаем.
+	// Кавычку атрибутов берём ИЗ САМОГО XML (не зависим от экранирования кавычек в Fore).
+	Function PatchFormContent(Desc: IMetabaseObjectDescriptor; Text: String): Boolean;
+	Var
+		Frm: IForm;
+		Xml, NewXml, Q, Cls, Events, Old: String;
+		P, E: Integer;
+	Begin
+		If IsNull(Desc) Then
+			Return False;
+		End If;
+		Try
+			Frm := Desc.Edit As IForm;
+			Xml := Frm.Content;
+			If String.Trim(Xml) = "" Then
+				WriteLog("    ⚠ у формы нет XML (Content) — привяжите события в Инспекторе формы вручную");
+				Return False;
+			End If;
+			P := Xml.IndexOf("_CMP D101=");
+			If P < 0 Then
+				WriteLog("    ⚠ в XML формы нет «_CMP D101=…» — формат другой, события не правим");
+				Return False;
+			End If;
+			P := P + 10;                                  // значение D101 начинается с кавычки
+			Q := Xml.SubString(P, 1);                     // кавычка атрибутов — из самого XML
+			Cls := (Desc.Id As String) + "Form";          // правило платформы: класс = Id объекта + Form
+			Events := FormEventsXml(Text, Q);             // «<OnCreate FormOnCreate="100"/>…»
+			Old := "";
+			E := Xml.SubString(P + 1, Xml.Length - P - 1).IndexOf(Q);
+			If E >= 0 Then
+				Old := Xml.SubString(P + 1, E);           // текущее имя класса в XML
+			End If;
+			NewXml := Xml;
+			If (Old <> "") And (Old <> Cls) Then
+				NewXml := String.Replace(NewXml, Old, Cls);
+				WriteLog("    …имя класса формы в XML: «" + Old + "» → «" + Cls + "»");
+			End If;
+			If Events <> "" Then
+				P := NewXml.IndexOf("<COMPONENT.EVENTS>");
+				If P < 0 Then
+					WriteLog("    ⚠ в XML формы нет блока COMPONENT.EVENTS — события не привязаны");
+				Else
+					E := NewXml.SubString(P, NewXml.Length - P).IndexOf("</COMPONENT.EVENTS>");
+					If E < 0 Then
+						WriteLog("    ⚠ блок COMPONENT.EVENTS в XML не закрыт — события не привязаны");
+					Else
+						Old := NewXml.SubString(P, E + 19);
+						NewXml := String.Replace(NewXml, Old,
+							"<COMPONENT.EVENTS>" + Events + "</COMPONENT.EVENTS>");
+						WriteLog("    …события формы привязаны кодом: " + FormEventBindings(Text));
+					End If;
+				End If;
+			Else
+				WriteLog("    ⚠ в модуле не нашлось обработчиков вида «Sub <Имя>On<Событие>(Sender: Object; …)»"
+					+ " — события формы не привязаны");
+			End If;
+			If NewXml = Xml Then
+				WriteLog("    …XML формы уже в порядке, сохранять нечего");
+				Return True;
+			End If;
+			Frm.Content := NewXml;
+			If Frm.Modified Then
+				(Frm As IMetabaseObject).Save;
+			End If;
+			WriteLog("    …XML формы сохранён (класс «" + Cls + "»)");
+			Return True;
+		Except On e: Exception Do
+			WriteLog("    ⚠ не удалось привязать события формы (" + e.Message
+				+ ") — привяжите их в Инспекторе формы вручную");
+			Return False;
+		End Try;
+	End Function PatchFormContent;
+
+	// --- «Параметры формы» (IForm.Content — XML: содержимое формы и привязки её событий) ---
+	// Единственный доступный кодом способ НАВЕСИТЬ обработчики формы: у IForm есть только Content и
+	// CreateFormControl (в справке Metabase/Forms нет ни OnCreate, ни Events, ни AddEventHandler;
+	// AddEventHandler/HasEventHandler есть только у отчётов — IPrxReport, и у обработчиков событий
+	// отчётов — ISharedEventHandlers). Платформа хранит форму именно как XML в Content и прямо
+	// предупреждает: «не рекомендуется изменять это свойство, чтобы не потерять работоспособность формы».
+	// Поэтому применяем ТОЛЬКО проверенный XML, снятый с рабочей формы (IForm.Content) — файл «<Id>.form.xml».
+	Function ApplyFormContent(Desc: IMetabaseObjectDescriptor; Xml, FromWhat: String): Boolean;
+	Var
+		Frm: IForm;
+	Begin
+		If IsNull(Desc) Or (String.Trim(Xml) = "") Then
+			Return False;
+		End If;
+		Try
+			Frm := Desc.Edit As IForm;
+			Frm.Content := Xml;
+			If Frm.Modified Then
+				(Frm As IMetabaseObject).Save;
+			End If;
+			WriteLog("    …«параметры формы» применены (привязки событий формы) из: " + FromWhat);
+			Return True;
+		Except On e: Exception Do
+			WriteLog("    ⚠ «параметры формы» не применились (" + e.Message
+				+ ") — привяжите события формы в Инспекторе формы вручную: " + FromWhat);
+			Return False;
+		End Try;
+	End Function ApplyFormContent;
+
+	// --- Ссылки сборок конкретного модуля: IModule.Assembly.References (может не сработать — тогда в журнал) ---
+	Sub ApplyModuleRefs(Modul: IModule; Refs: String);
+	Begin
+		If IsNull(Modul) Or (Refs = "") Then
+			Return;
+		End If;
+		Try
+			Modul.Assembly.References := Refs;
+			WriteLog("    …ссылки сборок модуля (из шапки файла): " + Refs);
+		Except On e: Exception Do
+			WriteLog("    ⚠ ссылки сборок модуля из шапки файла не задались: " + e.Message
+				+ " — при необходимости задайте в Инспекторе сборки вручную");
+		End Try;
+	End Sub ApplyModuleRefs;
+
+	// --- Идентификатор объекта из имени файла: «…\ИмяФайла.fore» → «ИмяФайла» ---
+	Function FileBaseName(FullName: String): String;
+	Var
+		S: String;
+		P: Integer;
+	Begin
+		S := FullName;
+		P := S.IndexOf("\");                       // убираем путь (все каталоги)
+		While P >= 0 Do
+			S := S.SubString(P + 1, S.Length - P - 1);
+			P := S.IndexOf("\");
+		End While;
+		P := S.IndexOf(".");                       // убираем расширение .fore
+		If P > 0 Then
+			S := S.SubString(0, P);
+		End If;
+		Return S;
+	End Function FileBaseName;
+
+	// --- Что делать с объектом, который уже есть в репозитории? ---
+	// Найден В НАШЕЙ сборке → обновляем его код (LastNewId = Id).
+	// Найден В ДРУГОЙ папке → спрашиваем пользователя: «ОК» — обновлять существующий там, где он лежит,
+	//   «Отмена» — создавать КОПИИ в нашей сборке с Id «<Id><суффикс>» (поле «Суффикс для копий»);
+	//   занятость Id копии проверяется (занят → файл пропускается с подсказкой изменить суффикс).
+	// Возврат: Null — объект надо СОЗДАТЬ (с Id из LastNewId); иначе — существующий объект для ОБНОВЛЕНИЯ.
+	Function ResolveExisting(AsmDesc: IMetabaseObjectDescriptor; Id: String): IMetabaseObjectDescriptor;
+	Var
+		MB: IMetabase;
+		Desc, Probe: IMetabaseObjectDescriptor;
+		Suffix, NewId, Msg: String;
+	Begin
+		MB := MetabaseClass.Active;
+		LastNewId := Id;
+		LastResolveFailed := False;
+		LastCopySource := Null;
+		Desc := Null;
+		Try
+			Desc := MB.ItemById(Id);
+		Except On e: Exception Do
+			Desc := Null;
+		End Try;
+		If IsNull(Desc) Then
+			Return Null;                                     // объекта нет — создадим
+		End If;
+		If Not IsNull(AsmDesc) Then
+			Try
+				If Desc.Parent.Key = AsmDesc.Key Then
+					WriteLog("Объект «" + Id + "» есть в этой сборке — обновляем его код.");
+					Return Desc;
+				End If;
+			Except On e: Exception Do
+				WriteLog("Деплой: родитель объекта «" + Id + "» не определился — " + e.Message);
+			End Try;
+		End If;
+		// объект в ДРУГОЙ папке: решение спрашиваем один раз за запуск
+		Suffix := String.Trim(CopySuffixEdit.Text);
+		If Suffix = "" Then
+			Suffix := "_COPY";
+		End If;
+		If Not CopyChoiceAsked Then
+			CopyChoiceAsked := True;
+			Msg := "Объект «" + Id + "» уже есть в репозитории, но в ДРУГОЙ папке." + DEPLOY_CRLF + DEPLOY_CRLF
+				+ "«ОК» — обновлять существующий объект там, где он лежит." + DEPLOY_CRLF
+				+ "«Отмена» — создавать КОПИИ в нашей сборке с Id «<имя>" + Suffix + "»."
+				+ DEPLOY_CRLF + DEPLOY_CRLF
+				+ "Решение применяется ко всем объектам этого запуска.";
+			CopyChoiceCopy := Not WinApplication.ConfirmationBox(Msg);
+			If CopyChoiceCopy Then
+				WriteLog("Решение: объекты из других папок — создавать КОПИИ с суффиксом «" + Suffix + "».");
+			Else
+				WriteLog("Решение: объекты из других папок — ОБНОВЛЯТЬ там, где они лежат.");
+			End If;
+		End If;
+		If Not CopyChoiceCopy Then
+			WriteLog("Обновляем объект «" + Id + "» в другой папке (по решению пользователя).");
+			Return Desc;
+		End If;
+		LastCopySource := Desc;                             // при создании копии перенесём «параметры формы» источника
+		NewId := Id + Suffix;                                // Id копии: проверяем, что не занят
+		Probe := Null;
+		Try
+			Probe := MB.ItemById(NewId);
+		Except On e: Exception Do
+			Probe := Null;
+		End Try;
+		If Not IsNull(Probe) Then
+			WriteLog("! Id копии «" + NewId + "» УЖЕ ЗАНЯТ — файл пропущен."
+				+ " Измените на форме «Суффикс для копий» и повторите деплой.");
+			LastResolveFailed := True;
+			Return Null;
+		End If;
+		LastNewId := NewId;
+		WriteLog("Объект «" + Id + "» остаётся в другой папке; создаём копию «" + NewId + "».");
+		Return Null;
+	End Function ResolveExisting;
+
+	// --- Имя класса формы для идентификатора объекта ---
+	// Правило платформы (и требование со стенда): класс формы = «<Id объекта> + Form» — ВСЕГДА,
+	// даже если Id уже оканчивается на «Form». Подтверждение из справки (примеры объявлений форм):
+	// `Class TESTForm: Form` (объект TEST), `Class OBJ3592Form: Form`, `Class ITERATORForm: Form`.
+	// То есть для объекта `SchedulerForm` класс — `SCHEDULERForm`, для копии `Scheduler_COPY`
+	// — `Scheduler_COPYForm`. Имена классов в шаблонах проекта приведены к этому же правилу.
+	Function FormClassNameFor(Id: String): String;
+	Begin
+		Return Id + "Form";
+	End Function FormClassNameFor;
+
+	// --- Имя класса формы, объявленное в тексте («Class <Имя>: Form» / «Public Class <Имя>: Form») ---
+	Function FormClassNameIn(Text: String): String;
+	Var
+		Rest, Line: String;
+		P, E: Integer;
+	Begin
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			If Line.IndexOf("//") <> 0 Then                // строку-комментарий не разбираем
+				P := Line.IndexOf("Class ");               // «Class X: Form» и «Public Class X: Form»
+				E := Line.IndexOf(": Form");
+				If (P >= 0) And (E > P) Then
+					Return String.Trim(Line.SubString(P + 6, E - P - 6));
+				End If;
+			End If;
+		End While;
+		Return "";
+	End Function FormClassNameIn;
+
+	// --- Является ли символ частью идентификатора (буква латиница/кириллица, цифра, «_») ---
+	Function IsIdentChar(Ch: String): Boolean;
+	Begin
+		If Ch = "" Then
+			Return False;
+		End If;
+		If ("_" + "0123456789" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "abcdefghijklmnopqrstuvwxyz"
+			+ "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ" + "абвгдеёжзийклмнопрстуфхцчшщъыьэюя").IndexOf(Ch) >= 0 Then
+			Return True;
+		End If;
+		Return False;
+	End Function IsIdentChar;
+
+	// --- Замена идентификатора в тексте по границам слова (Old → New), счёт в LastReplaceCount ---
+	// Простая замена «по подстроке» испортила бы, например, SchedulerForm_OLDREF; поэтому проверяем,
+	// что слева и справа от вхождения стоит НЕ буква/цифра/подчёркивание.
+	Function ReplaceIdent(Text, Old, New_: String): String;
+	Var
+		Result, Head, Prev, Next_: String;
+		P: Integer;
+	Begin
+		LastReplaceCount := 0;
+		If (Old = "") Or (Old = New_) Then
+			Return Text;
+		End If;
+		Result := "";
+		Head := Text;
+		While Head <> "" Do
+			P := Head.IndexOf(Old);
+			If P < 0 Then
+				Result := Result + Head;
+				Head := "";
+			Else
+				Prev := "";
+				Next_ := "";
+				If P > 0 Then
+					Prev := Head.SubString(P - 1, 1);
+				End If;
+				If P + Old.Length < Head.Length Then
+					Next_ := Head.SubString(P + Old.Length, 1);
+				End If;
+				If IsIdentChar(Prev) Or IsIdentChar(Next_) Then
+					// вхождение внутри другого идентификатора — копируем как есть и идём дальше
+					Result := Result + Head.SubString(0, P + 1);
+					Head := Head.SubString(P + 1, Head.Length - P - 1);
+				Else
+					Result := Result + Head.SubString(0, P) + New_;
+					Head := Head.SubString(P + Old.Length, Head.Length - P - Old.Length);
+					LastReplaceCount := LastReplaceCount + 1;
+				End If;
+			End If;
+		End While;
+		Return Result;
+	End Function ReplaceIdent;
+
+	// --- Применить все переименования классов к тексту модуля/формы ---
+	Function ApplyRenames(Text: String; Renames: ArrayList): String;
+	Var
+		R: CClassName;
+		Total, I: Integer;
+	Begin
+		Total := 0;
+		If Not IsNull(Renames) Then
+			For I := 0 To Renames.Count - 1 Do
+				R := Renames.Item(I) As CClassName;
+				If Not IsNull(R) Then
+					Text := ReplaceIdent(Text, R.Old, R.New_);
+					Total := Total + LastReplaceCount;
+					If LastReplaceCount > 0 Then
+						WriteLog("      «" + R.Old + "» → «" + R.New_ + "»: замен "
+							+ LastReplaceCount.ToString);
+					End If;
+				End If;
+			End For;
+		End If;
+		LastReplaceCount := Total;
+		Return Text;
+	End Function ApplyRenames;
+
+	// --- Ссылки сборок ОБЪЕКТА, как они есть в репозитории (без разбора кода) ---
+	// Справка (IModule.Standalone / ParentAssembly / Assembly, IAssembly.References):
+	//   * объект ВХОДИТ в сборку → Standalone = False, ссылки берутся у РОДИТЕЛЬСКОЙ сборки
+	//     (`Module.ParentAssembly.Bind As IAssembly).References`);
+	//   * объект НЕ входит в сборку → Standalone = True, он реализует временную сборку, её параметры
+	//     (в т.ч. ссылки) лежат в `Module.Assembly.References`.
+	// Системная сборка System подключена всегда и в списке не нужна.
+	Function RefsFromRepo(Desc: IMetabaseObjectDescriptor): String;
+	Var
+		Modul: IModule;
+		Refs: String;
+	Begin
+		Refs := "";
+		If IsNull(Desc) Then
+			Return "";
+		End If;
+		Try
+			Modul := Desc.Edit As IModule;
+			If Not Modul.Standalone Then
+				Try
+					Refs := (Modul.ParentAssembly.Bind As IAssembly).References;
+					WriteLog("   родительская сборка: «" + Modul.ParentAssembly.Id + "»");
+					WriteLog("   ссылки сборок (из сборки-владельца): " + Refs);
+				Except On e: Exception Do
+					Debug.WriteLine("Выгрузка: ссылки родительской сборки не получены — " + e.Message);
+				End Try;
+				If Refs = "" Then                              // на случай нестандартной конфигурации
+					Try
+						Refs := Modul.Assembly.References;
+					Except On e: Exception Do
+						Refs := "";
+					End Try;
+				End If;
+			Else
+				Refs := Modul.Assembly.References;             // временная сборка объекта
+				WriteLog("   объект не входит в сборку (Standalone = True) — ссылки временной сборки: " + Refs);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Выгрузка: ссылки объекта «" + Desc.Id + "» не получены — " + e.Message);
+		End Try;
+		Return Refs;
+	End Function RefsFromRepo;
+
+	// --- Шапка файла с фактическими ссылками: заменить строку «// REFS: …» или добавить её первой ---
+	Function EnsureRefsHeader(Text, Refs: String): String;
+	Var
+		Rest, Line, S: String;
+		P: Integer;
+	Begin
+		If String.Trim(Refs) = "" Then
+			Return Text;
+		End If;
+		S := "// REFS: " + Refs;
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(DEPLOY_CRLF);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + DEPLOY_CRLF.Length, Rest.Length - P - DEPLOY_CRLF.Length);
+			End If;
+			If Line.IndexOf("// REFS:") = 0 Then
+				Return String.Replace(Text, Line, S);          // заменяем существующую строку шапки
+			End If;
+		End While;
+		Return S + DEPLOY_CRLF + Text;                         // иначе добавляем первой строкой
+	End Function EnsureRefsHeader;
+
+	// --- Выгрузка содержимого сборки в папку: по файлу «<Id>.fore» на каждый объект ---
+	// IMetabaseObjectDescriptor.Children → IMetabaseObjectDescriptors (справка: «Children. Чтение
+	// объектов»); текст берём через «.Edit As IModule» — модуль и модуль формы читаются одинаково.
+	// Для форм дополнительно выгружаются «параметры формы» (IForm.Content — XML, там же привязки
+	// событий формы) в файл «<Id>.form.xml»: этот файл инструмент умеет применять при создании формы.
+	// Это резервная копия стенда и способ сверить «что лежит в репозитории» с локальной папкой.
+	Sub ExportAssemblyToFolder(AsmDesc: IMetabaseObjectDescriptor; Folder: String);
+	Var
+		Descs: IMetabaseObjectDescriptors;
+		Desc: IMetabaseObjectDescriptor;
+		Modul: IModule;
+		Xml, Refs, Text: String;
+		FilePath, FileName: String;
+		Ok, Bad, Total: Integer;
+	Begin
+		If IsNull(AsmDesc) Or (String.Trim(Folder) = "") Then
+			WriteLog("! Выгрузка: не задана сборка или папка.");
+			Return;
+		End If;
+		WriteLog("--- Выгрузка сборки «" + AsmDesc.Id + "» в папку: " + Folder + " ---");
+		Ok := 0;
+		Bad := 0;
+		Total := 0;
+		Try
+			Descs := AsmDesc.Children;                 // состав сборки
+		Except On e: Exception Do
+			WriteLog("! Состав сборки не получен: " + e.Message);
+			Return;
+		End Try;
+		If IsNull(Descs) Then
+			WriteLog("Сборка пуста — выгружать нечего.");
+			Return;
+		End If;
+		For Each Desc In Descs Do
+			Total := Total + 1;
+			Try
+				Modul := Desc.Edit As IModule;
+				FileName := (Desc.Id As String) + ".fore";
+				FilePath := Path.Combine(Folder, FileName);
+				// Ссылки сборок берём ИЗ РЕПОЗИТОРИЯ (родительская сборка либо временная сборка объекта)
+				// и пишем их в шапку файла: при обратной заливке инструмент подставит ровно те же ссылки.
+				Refs := RefsFromRepo(Desc);
+				Text := EnsureRefsHeader(Modul.Text, Refs);
+				If WriteTextFile(FilePath, Text) Then
+					Ok := Ok + 1;
+					WriteLog("  сохранён «" + FileName + "» (" + Text.Length.ToString + " символов)"
+						+ RefsSuffix(Refs));
+				Else
+					Bad := Bad + 1;
+				End If;
+				// Форма: рядом сохраняем «параметры формы» (XML) — именно там лежат привязки событий
+				// формы (OnCreate/OnShow/OnCommand…), которых в IForm, кроме Content, нет.
+				If Desc.ClassId = MetabaseObjectClass.KE_CLASS_FORM Then
+					Xml := "";
+					Try
+						Xml := (Desc.Edit As IForm).Content;
+					Except On e: Exception Do
+						Debug.WriteLine("Выгрузка: параметры формы «" + Desc.Id + "» не получены — " + e.Message);
+					End Try;
+					If Xml <> "" Then
+						WriteTextFile(Path.Combine(Folder, (Desc.Id As String) + ".form.xml"), Xml);
+						WriteLog("  сохранены параметры формы (учитывая привязки событий): «"
+							+ Desc.Id + ".form.xml»");
+					End If;
+				End If;
+			Except On e: Exception Do
+				Bad := Bad + 1;
+				WriteLog("  ⚠ объект «" + Desc.Id + "» не выгружен: " + e.Message);
+			End Try;
+		End For;
+		WriteLog("Выгрузка: объектов — " + Total.ToString + ", сохранено файлов — " + Ok.ToString
+			+ ", с ошибками — " + Bad.ToString + ".");
+		WinApplication.InformationBox("Выгрузка сборки завершена." + DEPLOY_CRLF
+			+ "Сборка: " + AsmDesc.Id + DEPLOY_CRLF
+			+ "Папка: " + Folder + DEPLOY_CRLF
+			+ "Сохранено файлов: " + Ok.ToString + " из " + Total.ToString + DEPLOY_CRLF
+			+ "С ошибками: " + Bad.ToString);
+	End Sub ExportAssemblyToFolder;
+
+	// --- Модуль: обновить существующий (Existing) или создать новый в сборке (IModule.Text + Save) ---
+	Function UpsertModule(AsmDesc: IMetabaseObjectDescriptor; ModuleId, Text: String; Existing: IMetabaseObjectDescriptor; Refs: String): Boolean;
+	Var
+		MB: IMetabase;
+		CrInfo: IMetabaseObjectCreateInfo;
+		Modul: IModule;
+	Begin
+		MB := MetabaseClass.Active;
+		LastCreated := IsNull(Existing);             // для сводки: новый модуль или обновление
+		Try
+			If Not IsNull(Existing) Then
+				WriteLog("Обновляю модуль «" + ModuleId + "»…");
+				Modul := Existing.Edit As IModule;
+			Else
+				WriteLog("Создаю модуль «" + ModuleId + "»…");
+				CrInfo := MB.CreateCreateInfo;
+				CrInfo.ClassId := MetabaseObjectClass.KE_CLASS_MODULE;
+				CrInfo.Id := ModuleId;
+				CrInfo.Name := ModuleId;
+				CrInfo.Parent := AsmDesc;
+				Modul := MB.CreateObject(CrInfo).Edit As IModule;
+			End If;
+			Modul.Text := Text;
+			ApplyModuleRefs(Modul, Refs);
+			If Modul.Modified Then
+				(Modul As IMetabaseObject).Save;
+			End If;
+			WriteLog("    …готово (" + Text.Length.ToString + " символов)");
+			Return True;
+		Except On e: Exception Do
+			WriteLog("! Модуль «" + ModuleId + "» не залит: " + e.Message);
+			Return False;
+		End Try;
+	End Function UpsertModule;
+
+	// --- Форма: обновить существующую (Existing) или создать новую; текст — в модуль формы ---
+	Function UpsertForm(AsmDesc: IMetabaseObjectDescriptor; FormId, Text: String; Existing: IMetabaseObjectDescriptor; Refs: String): Boolean;
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		CrInfo: IMetabaseObjectCreateInfo;
+		MObj: IMetabaseObject;
+		Modul: IModule;
+		Xml, XmlPath, FromWhat: String;
+	Begin
+		MB := MetabaseClass.Active;
+		Desc := Existing;
+		LastCreated := IsNull(Existing);             // для сводки: новая форма или обновление
+		Try
+			If Not IsNull(Existing) Then
+				WriteLog("Форма «" + FormId + "» уже есть — обновляю её код…");
+			Else
+				WriteLog("Создаю форму «" + FormId + "»…");
+				CrInfo := MB.CreateCreateInfo;
+				CrInfo.ClassId := MetabaseObjectClass.KE_CLASS_FORM;
+				CrInfo.Id := FormId;
+				CrInfo.Name := FormId;
+				CrInfo.Parent := AsmDesc;
+				MObj := MB.CreateObject(CrInfo).Edit;
+				MObj.Save;
+				Desc := Null;
+				Try
+					Desc := MB.ItemById(FormId);         // только что созданная форма
+				Except On e: Exception Do
+					Desc := Null;
+				End Try;
+			End If;
+			If IsNull(Desc) Then
+				WriteLog("! Форма «" + FormId + "» не создана");
+				Return False;
+			End If;
+			// Созданную ЗАНОВО форму (в том числе копию) сразу наделяем «параметрами формы»:
+			// IForm.Content — это XML, в котором лежат и привязки событий формы (OnCreate/OnShow/OnCommand…).
+			// Так обработчики формы можно «навесить» кодом: один раз выгрузить рабочую форму
+			// («Выгрузить в файлы» → появится «<Id>.form.xml») и дальше инструмент применяет этот файл.
+			If IsNull(Existing) Then
+				Xml := "";
+				FromWhat := "";
+				XmlPath := Path.Combine(String.Trim(LocalPathEdit.Text), FormId + ".form.xml");
+				If File.Exists(XmlPath) Then
+					Xml := ReadTextFile(XmlPath);
+					FromWhat := XmlPath;
+				Else
+					If Not IsNull(LastCopySource) Then
+						Try
+							Xml := (LastCopySource.Edit As IForm).Content;   // привязки формы-источника
+							FromWhat := "форма-источник «" + LastCopySource.Id + "»";
+						Except On e: Exception Do
+							Debug.WriteLine("Деплой: параметры формы-источника не получены — " + e.Message);
+						End Try;
+					End If;
+				End If;
+				If Xml <> "" Then
+					ApplyFormContent(Desc, Xml, FromWhat);
+				Else
+					WriteLog("   ⚠ привязки событий формы не перенесены. Привяжите их в Инспекторе формы ОДИН раз,"
+						+ " затем «Выгрузить в файлы» → появится «" + FormId + ".form.xml», и инструмент будет"
+						+ " применять его при следующих заливках.");
+				End If;
+				// И в любом случае проставляем привязки ПО КОДУ модуля: в XML формы правится имя класса
+				// (правило «<Id объекта> + Form») и блок COMPONENT.EVENTS («событие → обработчик»).
+				// Остальной XML не трогаем, поэтому уже сделанные настройки формы не теряются.
+				PatchFormContent(Desc, Text);
+			End If;
+			// Текст модуля формы: у формы тоже есть модуль — пробуем записать, если API это позволяет
+			Try
+				Modul := Desc.Edit As IModule;
+				Modul.Text := Text;
+				ApplyModuleRefs(Modul, Refs);
+				If Modul.Modified Then
+					(Modul As IMetabaseObject).Save;
+				End If;
+				WriteLog("    …код формы записан (" + Text.Length.ToString + " символов)");
+			Except On e: Exception Do
+				WriteLog("⚠ Форма «" + FormId + "» создана, код автоматически не вставился: " + e.Message);
+				WriteLog("   Вставьте код вручную из файла папки: " + LocalPathEdit.Text);
+			End Try;
+			// События динамических контролов привязывает сам код формы (`Ctl.OnClick := …`).
+			// События ФОРМЫ кодом привязать нельзя (в IForm нет такого API) — выписываем их списком.
+			WriteLog("   Связи событий формы (привяжите в Инспекторе формы):"
+				+ FormEventBindings(Text));
+			WriteLog("   События динамических контролов форма привязывает сама (кодом).");
+			Return True;
+		Except On e: Exception Do
+			WriteLog("! Форма «" + FormId + "» не залита: " + e.Message);
+			Return False;
+		End Try;
+	End Function UpsertForm;
+End Class DEPLOYTOOLForm;
+
+
+

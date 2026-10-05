@@ -1,0 +1,441 @@
+// ID: UNAVAILABILITYRECORDS  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма «Ведение недоступности системы» — дополнительное окно планировщика.
+// Назначение: вести таблицу периодов недоступности (добавить / изменить / удалить / обновить),
+// из которой окно «Недоступность системы» берёт периоды для построения плана переноса.
+// Данные — таблица UNAVAILABILITY (см. UnavailabilityStore.fore: LoadUnavailRecords,
+// AddUnavailRecord, UpdateUnavailRecord, DeleteUnavailRecord).
+// ВАЖНО: копируйте в свою форму ТОЛЬКО тела обработчиков; имена контролов — под свою форму.
+
+// ВАЖНО: имя класса должно совпадать с именем формы-объекта репозитория — именно по этому имени
+// форма открывается из другого кода: New UNAVAILABILITYRECORDSForm.CreateForm(Self As IWin32Window).
+// Форму нужно добавить в «Ссылки сборок» той сборки, где лежит код, который её открывает.
+
+Class UNAVAILABILITYRECORDSForm: Form
+	// --- контролы окна (адаптируйте имена/типы под реальную форму) ---
+	RecordsList: ListView;            // таблица записей о недоступности
+	RecStartDatePicker: DateTimePicker;   // дата начала (Kind = «дата»)
+	RecStartTimePicker: DateTimePicker;   // время начала (Kind = «время»)
+	RecEndDatePicker: DateTimePicker;     // дата окончания (Kind = «дата»)
+	RecEndTimePicker: DateTimePicker;     // время окончания (Kind = «время»)
+	RecAuthorLabel: Label;            // автор и время последнего изменения выбранной записи
+	RecLayoutK: Double;               // масштаб раскладки (макет окна снят в 1180x600)
+
+	// --- кнопки окна (имена-предложение: привяжите OnClick к обработчикам) ---
+	BtnRecRefresh: Button;            // «Обновить»            → RefreshRecordsOnClick
+	BtnRecAdd: Button;                // «Добавить»            → AddRecordOnClick
+	BtnRecUpdate: Button;             // «Изменить»            → UpdateRecordOnClick
+	BtnRecDelete: Button;             // «Удалить»             → DeleteRecordOnClick
+	BtnRecCheckStorage: Button;       // «Проверить хранилище» → CheckStorageOnClick
+
+	Map_: SortedList; // карта «имя → контрол», созданных фабрикой
+
+	// === 0.1) Контролы формы ===
+	// Динамические контролы (кнопки, поля, метки, Memo, панели) создаёт ФАБРИКА по текстовому
+	// описанию ScreenSpecText — их не нужно объявлять и размещать вручную. Таблицы, пикеры и
+	// диалоги создаются конструктором, если их нет на форме (им нужен Инспектор).
+	Sub CreateFormComponents;
+	Var
+		Ctl: Button;
+	Begin
+		If IsNull(RecordsList) Then
+			RecordsList := New ListView.Create;
+			RecordsList.Parent := Self;
+		End If;
+		If IsNull(RecStartDatePicker) Then
+			RecStartDatePicker := New DateTimePicker.Create;
+			RecStartDatePicker.Parent := Self;
+		End If;
+		If IsNull(RecStartTimePicker) Then
+			RecStartTimePicker := New DateTimePicker.Create;
+			RecStartTimePicker.Parent := Self;
+		End If;
+		If IsNull(RecEndDatePicker) Then
+			RecEndDatePicker := New DateTimePicker.Create;
+			RecEndDatePicker.Parent := Self;
+		End If;
+		If IsNull(RecEndTimePicker) Then
+			RecEndTimePicker := New DateTimePicker.Create;
+			RecEndTimePicker.Parent := Self;
+		End If;
+
+		// --- Динамическая часть: создаётся фабрикой из описания (экран = данные) ---
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), RecLayoutK);
+		Try
+			RecAuthorLabel := UiFind(Map_, "RecAuthorLabel");
+			BtnRecRefresh := UiFind(Map_, "BtnRecRefresh");
+			BtnRecAdd := UiFind(Map_, "BtnRecAdd");
+			BtnRecUpdate := UiFind(Map_, "BtnRecUpdate");
+			BtnRecDelete := UiFind(Map_, "BtnRecDelete");
+			BtnRecCheckStorage := UiFind(Map_, "BtnRecCheckStorage");
+		Except On e: Exception Do
+			Debug.WriteLine("Форма: контролы не получены из карты фабрики — " + e.Message);
+		End Try;
+
+		// --- Подписка динамических кнопок на их обработчики ---
+		Ctl := UiFind(Map_, "BtnRecRefresh") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := RefreshRecordsOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRecAdd") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := AddRecordOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRecUpdate") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := UpdateRecordOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRecDelete") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := DeleteRecordOnClick;
+		End If;
+		Ctl := UiFind(Map_, "BtnRecCheckStorage") As Button;
+		If Not IsNull(Ctl) Then
+			Ctl.OnClick := CheckStorageOnClick;
+		End If;
+	End Sub CreateFormComponents;
+
+	// === Описание динамической части экрана (координаты — в единицах макета) ===
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"LABEL;RecAuthorLabel;;690;404;480;20;" + #13 + #10
+			+ "BUTTON;BtnRecRefresh;Обновить;26;460;140;30;RefreshRecordsOnClick" + #13 + #10
+			+ "BUTTON;BtnRecAdd;Добавить;176;460;140;30;AddRecordOnClick" + #13 + #10
+			+ "BUTTON;BtnRecUpdate;Изменить;326;460;140;30;UpdateRecordOnClick" + #13 + #10
+			+ "BUTTON;BtnRecDelete;Удалить;476;460;140;30;DeleteRecordOnClick" + #13 + #10
+			+ "BUTTON;BtnRecCheckStorage;Проверить хранилище;626;460;220;30;CheckStorageOnClick";
+	End Function ScreenSpecText;
+
+	// === 0) Создание окна: свойства формы и расстановка контролов по макету ===
+	// Привяжите к событию формы OnCreate (Args: IEventArgs).
+	Sub RecordsFormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		RecLayoutK := 1.0;            // 1.0 — «как в макете» (1180x600)
+		CreateFormComponents;         // создать контролы, если форма собирается кодом (в дизайнере — пропустится)
+		ConfigurePeriodPickers;       // вид/формат пикеров («дата» / «время») — сразу, не дожидаясь OnShow
+		SetupRecordsLayout;
+	End Sub RecordsFormOnCreate;
+
+	// Разместить контрол по макетным координатам с учётом масштаба RecLayoutK
+	Sub RecPlace(C: IControl; L, T, W, H: Integer);
+	Begin
+		C.Left := Double.RoundInt(L * RecLayoutK);
+		C.Top := Double.RoundInt(T * RecLayoutK);
+		C.Width := Double.RoundInt(W * RecLayoutK);
+		C.Height := Double.RoundInt(H * RecLayoutK);
+	End Sub RecPlace;
+
+	// Табличный (колоночный) вид таблицы записей: Style = Report. Перечисление ListViewStyle
+	// (сборка Forms): 0 Icon, 1 SmallIcon, 2 List, 3 Report («таблица»).
+	Sub SetupRecList(LV: ListView);
+	Begin
+		Try
+			LV.Style := ListViewStyle.Report;
+			LV.GridLines := True;            // сетка между строками и столбцами
+			LV.RowSelect := True;            // выделять строку целиком
+			LV.ShowColumnHeaders := True;    // заголовки столбцов
+			LV.ReadOnly := True;             // текст ячеек не редактируется
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: настройка таблицы записей — " + e.Message);
+		End Try;
+	End Sub SetupRecList;
+
+	// Колонки таблицы записей — создаются кодом только если их ещё нет (Columns.Count = 0):
+	// 4 колонки при UNV_PERIOD_SINGLE_COLUMN (дата+время одним полем) либо 6 при раздельной схеме.
+	// IListViewColumns.Add возвращает IListViewColumn (Caption, Width, Alignment, Delete).
+	// Колонки таблицы записей — создаются кодом только если их ещё нет (Columns.Count = 0):
+	// 4 колонки при UNV_PERIOD_SINGLE_COLUMN (дата+время одним полем) либо 6 при раздельной схеме.
+	// Каждая — через SetListColumn (подпись, ширина, «резиновость», выравнивание);
+	// тянется «Автор», даты/время — по центру.
+	Sub SetupRecListColumns(LV: ListView);
+	Var
+		Col: IListViewColumn;
+	Begin
+		Try
+			If LV.Columns.Count = 0 Then
+				If UNV_PERIOD_SINGLE_COLUMN Then
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Начало", 170, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Окончание", 170, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Автор", 200, True, TextAlignment.Left);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Изменено", 160, False, TextAlignment.Center);
+				Else
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Дата с", 110, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Время с", 90, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Дата по", 110, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Время по", 90, False, TextAlignment.Center);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Автор", 200, True, TextAlignment.Left);
+					Col := LV.Columns.Add;
+					SetListColumn(Col, "Изменено", 160, False, TextAlignment.Center);
+				End If;
+			Else
+				SetColumnsAutoSize(LV.Columns);      // колонки задал Инспектор — включаем авторазмер
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: колонки таблицы записей — " + e.Message);
+		End Try;
+	End Sub SetupRecListColumns;
+
+	// Свойства формы + расстановка контролов согласно макету (docs/mockups/form-records.png)
+	Sub SetupRecordsLayout;
+	Begin
+		Self.Width := Double.RoundInt(1180 * RecLayoutK);
+		Self.Height := Double.RoundInt(600 * RecLayoutK);
+
+		RecPlace(RecordsList, 26, 80, 1128, 290);       // столбцы: с, по, автор, изменено
+		RecPlace(RecStartDatePicker, 26, 400, 220, 28); // начало: дата (Kind = «дата»)
+		RecPlace(RecStartTimePicker, 254, 400, 90, 28); // начало: время (Kind = «время»)
+		RecPlace(RecEndDatePicker, 356, 400, 220, 28);  // окончание: дата
+		RecPlace(RecEndTimePicker, 584, 400, 90, 28);   // окончание: время
+
+		// Табличный вид и колонки (если их нет): Style = Report — ListViewStyle.Report
+		SetupRecList(RecordsList);
+		SetupRecListColumns(RecordsList);
+		// Клик по строке привязываем КОДОМ (как MetabaseListView2 в планировщике и PlanTable):
+		// иначе подстановка периода в пикеры зависит только от привязки в Инспекторе, и «выделение
+		// строки не подтягивает период» при любой потере этой привязки (пересоздание контрола и т.п.).
+		RecordsList.OnClick := RecordsListOnClick;
+
+		// Автомасштаб при изменении размеров окна (константа UI_AUTOSIZE_ON_RESIZE в TaskContainerLib):
+		// список тянется по ширине, ряд кнопок — держится за нижний край окна
+		SetAutoSize(RecordsList, True, False);
+		SetAutoSize(BtnRecRefresh, False, True);
+		SetAutoSize(BtnRecAdd, False, True);
+		SetAutoSize(BtnRecUpdate, False, True);
+		SetAutoSize(BtnRecDelete, False, True);
+		SetAutoSize(BtnRecCheckStorage, False, True);
+	End Sub SetupRecordsLayout;
+
+	// Собрать начало периода из пикеров «дата» + «время»
+
+	// --- состояние окна (в модуле формы) ---
+	Records: ArrayList;               // список CUnavailRecord
+	RecordKeys: ArrayList;            // ключи записей в порядке строк таблицы
+
+	// === 1) Заполнить таблицу при открытии окна ===
+	Sub RecordsFormOnShow(Sender: Object; Args: IEventArgs);
+	Begin
+		ConfigurePeriodPickers;
+		ReloadRecords;
+	End Sub RecordsFormOnShow;
+
+	// Настроить пикеры периода: на каждую границу — дата (Kind = «дата») + время (Kind = «время»);
+	// одновременно дату и время один DateTimePicker показывать не умеет (Kind — «дата» ИЛИ «время»)
+	Sub ConfigurePeriodPickers;
+	Begin
+		Try
+			// DateTimePickerKind (сборка Forms): 0 Date — дата, 1 Time — время
+			RecStartDatePicker.Kind := DateTimePickerKind.Date;
+			RecEndDatePicker.Kind := DateTimePickerKind.Date;
+			RecStartTimePicker.Kind := DateTimePickerKind.Time;
+			RecEndTimePicker.Kind := DateTimePickerKind.Time;
+			RecStartDatePicker.Format := "dd.MM.yyyy";
+			RecEndDatePicker.Format := "dd.MM.yyyy";
+			RecStartTimePicker.Format := "HH:mm";
+			RecEndTimePicker.Format := "HH:mm";
+		Except On e: Exception Do
+			Debug.WriteLine("Недоступность: формат пикеров — " + e.Message);
+		End Try;
+	End Sub ConfigurePeriodPickers;
+
+	// Собрать начало периода из пикеров «дата» + «время»
+	Function PickerStartDt: DateTime;
+	Begin
+		Return ComposeDateAndTime(RecStartDatePicker.CurrentDate, RecStartTimePicker.CurrentDate);
+	End Function PickerStartDt;
+
+	// Собрать окончание периода из пикеров «дата» + «время»
+	Function PickerEndDt: DateTime;
+	Begin
+		Return ComposeDateAndTime(RecEndDatePicker.CurrentDate, RecEndTimePicker.CurrentDate);
+	End Function PickerEndDt;
+
+	// Разложить период по четырём пикерам.
+	// ВАЖНО: вид пикеров (Kind — «дата»/«время») подтверждаем ДО записи значений: если Kind сбросился
+	// (Инспектор, пересоздание контрола, не привязан OnShow), время в пикер не попадёт — а значения
+	// пишем ПОСЛЕ, поэтому они не теряются. Строка в Debug показывает, что период дошёл до пикеров.
+	Sub SetPeriodPickers(StartDt: DateTime; EndDt: DateTime);
+	Begin
+		ConfigurePeriodPickers;
+		RecStartDatePicker.CurrentDate := StartDt;
+		RecStartTimePicker.CurrentDate := StartDt;
+		RecEndDatePicker.CurrentDate := EndDt;
+		RecEndTimePicker.CurrentDate := EndDt;
+		Debug.WriteLine("Недоступность: период в пикеры — " + StartDt.ToString + " — " + EndDt.ToString);
+	End Sub SetPeriodPickers;
+
+	// === 2) Обновить таблицу по кнопке ===
+	Sub RefreshRecordsOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		ReloadRecords;
+	End Sub RefreshRecordsOnClick;
+
+	// === 3) Клик по записи — подставить период и автора в поля ===
+	// Привязывается кодом в SetupRecordsLayout (`RecordsList.OnClick := RecordsListOnClick`) — как
+	// MetabaseListView2 в планировщике; та же подпрограмма может быть привязана и в Инспекторе.
+	Sub RecordsListOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Rec: CUnavailRecord;
+		Key: Integer;
+	Begin
+		Key := SelectedRecordKey;
+		Rec := FindUnavailRecord(Records, Key);
+		If IsNull(Rec) Then
+			Debug.WriteLine("Недоступность: клик по строке — запись не найдена (выбранный ключ "
+				+ Key.ToString + ", строк в списке " + RecordsList.Items.Count.ToString + ")");
+			Return;
+		End If;
+		SetPeriodPickers(Rec.StartDt, Rec.EndDt);
+		RecAuthorLabel.Text := "Автор: " + Rec.Author + " | последнее изменение: " + Rec.ChangedAt.ToString;
+	End Sub RecordsListOnClick;
+
+	// === 4) Добавить запись по значениям полей (автор и время изменения — автоматически) ===
+	Sub AddRecordOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Key: Integer;
+	Begin
+		If PickerStartDt >= PickerEndDt Then
+			WinApplication.InformationBox("Начало периода должно быть раньше окончания");
+			Return;
+		End If;
+		Key := AddUnavailRecord(PickerStartDt, PickerEndDt, "");
+		If Key = 0 Then
+			WinApplication.InformationBox("Не удалось добавить запись о недоступности");
+			Return;
+		End If;
+		ReloadRecords;
+		WinApplication.InformationBox("Запись добавлена (ключ " + Key.ToString + ")");
+	End Sub AddRecordOnClick;
+
+	// === 5) Изменить выбранную запись ===
+	Sub UpdateRecordOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Key: Integer;
+	Begin
+		Key := SelectedRecordKey;
+		If Key = 0 Then
+			WinApplication.InformationBox("Выберите запись в таблице");
+			Return;
+		End If;
+		If Not UpdateUnavailRecord(Key, PickerStartDt, PickerEndDt, "") Then
+			WinApplication.InformationBox("Не удалось изменить запись");
+			Return;
+		End If;
+		ReloadRecords;
+		WinApplication.InformationBox("Запись изменена");
+	End Sub UpdateRecordOnClick;
+
+	// === 6) Удалить выбранную запись (вместе с сохранёнными по ней планами) ===
+	Sub DeleteRecordOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Key: Integer;
+	Begin
+		Key := SelectedRecordKey;
+		If Key = 0 Then
+			WinApplication.InformationBox("Выберите запись в таблице");
+			Return;
+		End If;
+		If Not DeleteUnavailRecord(Key) Then
+			WinApplication.InformationBox("Не удалось удалить запись");
+			Return;
+		End If;
+		ReloadRecords;
+		WinApplication.InformationBox("Запись удалена");
+	End Sub DeleteRecordOnClick;
+
+	// === 7) Проверить доступ к таблицам хранилища (диагностика для стенда) ===
+	Sub CheckStorageOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		WinApplication.InformationBox(CheckUnavailStorage);
+	End Sub CheckStorageOnClick;
+
+	// --- вспомогательные ---
+
+	// Перечитать таблицу недоступностей из репозитория
+	Sub ReloadRecords;
+	Begin
+		Records := LoadUnavailRecords;
+		FillRecordsTable;
+	End Sub ReloadRecords;
+
+	// Вывести записи в таблицу (колонки задаются в Инспекторе; порядок — как в схеме полей)
+	Sub FillRecordsTable;
+	Var
+		Item: IListViewItem;
+		Rec: CUnavailRecord;
+		I: Integer;
+	Begin
+		RecordsList.Items.Clear;
+		RecordKeys := New ArrayList.Create;
+		If IsNull(Records) Then
+			Return;
+		End If;
+		RecordsList.Items.BeginUpdate;
+		For I := 0 To Records.Count - 1 Do
+			Rec := Records.Item(I) As CUnavailRecord;
+			RecordKeys.Add(Rec.Key);
+			If UNV_PERIOD_SINGLE_COLUMN Then
+				// 4 колонки: начало (дата и время) | окончание (дата и время) | автор | изменение
+				RecordsList.Items.Add(Rec.StartDt.ToString);
+				Item := RecordsList.Items.Item(RecordsList.Items.Count - 1);
+				Item.ColumnText(1) := Rec.EndDt.ToString;
+				Item.ColumnText(2) := Rec.Author;
+				Item.ColumnText(3) := Rec.ChangedAt.ToString;
+			Else
+				// 6 колонок: дата и время начала/окончания — раздельными полями
+				RecordsList.Items.Add(Rec.StartDt.Date.ToString);
+				Item := RecordsList.Items.Item(RecordsList.Items.Count - 1);
+				Item.ColumnText(1) := RecTimeText(Rec.StartDt);
+				Item.ColumnText(2) := Rec.EndDt.Date.ToString;
+				Item.ColumnText(3) := RecTimeText(Rec.EndDt);
+				Item.ColumnText(4) := Rec.Author;
+				Item.ColumnText(5) := Rec.ChangedAt.ToString;
+			End If;
+		End For;
+		RecordsList.Items.EndUpdate;
+	End Sub FillRecordsTable;
+
+	// Ключ записи, соответствующей выбранной строке таблицы (0 — ничего не выбрано).
+	// Если SelectedItem ещё не обновился (обработчик клика может сработать раньше выделения), берём
+	// FocusedItem — так же сделано в планировщике (`SelectedPlanImpact`); иначе клик по строке
+	// «не подтягивает» период в пикеры (первый клик после открытия окна / после обновления списка).
+	Function SelectedRecordKey: Integer;
+	Var
+		Item: IListViewItem;
+	Begin
+		Item := RecordsList.SelectedItem;
+		If IsNull(Item) Then
+			Item := RecordsList.FocusedItem;       // клик мог ещё не изменить SelectedItem
+		End If;
+		If IsNull(Item) Then
+			Return 0;
+		End If;
+		If (Item.Index < 0) Or (Item.Index >= RecordKeys.Count) Then
+			Return 0;
+		End If;
+		Return RecordKeys.Item(Item.Index) As Integer;
+	End Function SelectedRecordKey;
+
+	// Время в формате ЧЧ:ММ
+	Function RecTwoDigits(V: Integer): String;
+	Begin
+		If V < 10 Then
+			Return "0" + V.ToString;
+		End If;
+		Return V.ToString;
+	End Function RecTwoDigits;
+
+	Function RecTimeText(D: DateTime): String;
+	Begin
+		Return RecTwoDigits(D.Hour) + ":" + RecTwoDigits(D.Minute);
+	End Function RecTimeText;
+
+End Class UNAVAILABILITYRECORDSForm;

@@ -1,0 +1,471 @@
+// ID: EDITORSPIKE  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// ===========================================================================================
+// ПРОЕКТ «РЕДАКТОР FORE» — ЭТАП 0 (СПАЙК). Проверка на стенде API компиляции и метаданных.
+// ===========================================================================================
+// Что проверяем (по справке, сборка Fore):
+//   * MetabaseClass.Active As IForeServices → GetRuntime: IForeRuntime;
+//   * IForeRuntime.ResolveAssembly(<Id>): IForeAssemblyBinary → CheckCompiled (успех/ошибки),
+//     IsLoaded, Name, Namespace_, ObjectName, Version, TimeStamp, Builtin, HiddenReferences,
+//     GetReferenceTimeStamp(<сборка>);
+//   * IForeRuntime.BindToAssembly(<Id>): IForeAssembly → ClassesCount/ClassItem, BindToClass;
+//     IForeClass → Name, ParentName, ClassType, SubsCount/SubItem, XMLDocumentation;
+//     IForeSub  → Name, ModuleName, IsConstructor, IsStatic, IsResult, XMLDocumentation;
+//   * IForeAssemblyBinary.GetMetadata: ШАГ ВЫКЛЮЧЕН — на стенде документ метаданных не разбирается
+//     (parsed = FALSE, падение в XMLLib2.dll); словарь автодополнения берём из своего индекса API
+//     (docs/forsite/api-index.txt, генератор tools/make-api-index.py);
+//   * поведение Memo: SelStart/SelLength/SelText и загрузка большого текста (модуль SCHEDULER).
+// Как запускать: залить файл инструментом деплоя (как обычный модуль/форму) → открыть форму
+//   «EDITORSPIKE» на стенде → нажать «Прогнать спайк». Отчёт появится в Memo и в файле
+//   <Папка отчёта>\editor-spike-report.txt.
+// Ссылки сборок: Fore;Metabase;Forms;Ui;Io;Collections;System (Xml понадобится только если
+//   когда-нибудь вернуть шаг с метаданными).
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+// ===========================================================================================
+
+Class EDITORSPIKEForm: Form
+	// --- настройки ---
+	CRLF_: String;
+	DEFAULT_ASM: String;          // сборка, которую проверяем по умолчанию
+	DEFAULT_OUT: String;          // папка для отчёта и метаданных
+	// --- поля формы ---
+	AsmIdEdit: EditBox;
+	OutPathEdit: EditBox;
+	LogMemo: Memo;
+	BtnRun: Button;
+	BtnSaveReport: Button;
+	BtnProbeSel: Button;          // «Проба: что видит Memo» — читает текущее выделение
+	BtnProbeIns: Button;          // «Проба: вставка через SelText» — проверяет запись SelText
+	LblAsm: Label;
+	LblOut: Label;
+	// --- состояние ---
+	Report: String;
+
+	// ===========================================================================================
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		CRLF_ := #13 + #10;
+		DEFAULT_ASM := "UNVAIL_ASSEMBLY";
+		DEFAULT_OUT := "F:\Scheduler Tasks";
+		Report := "";
+		Self.Width := 1000;
+		Self.Height := 640;
+		Self.Text := "Спайк редактора Fore: API компиляции и метаданных";
+		LblAsm := New Label.Create;
+		LblAsm.Parent := Self;
+		LblAsm.Left := 16;
+		LblAsm.Top := 16;
+		LblAsm.Width := 260;
+		LblAsm.Height := 20;
+		LblAsm.Text := "Сборка (Id в репозитории):";
+		AsmIdEdit := New EditBox.Create;
+		AsmIdEdit.Parent := Self;
+		AsmIdEdit.Left := 280;
+		AsmIdEdit.Top := 12;
+		AsmIdEdit.Width := 300;
+		AsmIdEdit.Height := 26;
+		AsmIdEdit.Text := DEFAULT_ASM;
+		LblOut := New Label.Create;
+		LblOut.Parent := Self;
+		LblOut.Left := 16;
+		LblOut.Top := 52;
+		LblOut.Width := 260;
+		LblOut.Height := 20;
+		LblOut.Text := "Папка для отчёта и метаданных:";
+		OutPathEdit := New EditBox.Create;
+		OutPathEdit.Parent := Self;
+		OutPathEdit.Left := 280;
+		OutPathEdit.Top := 48;
+		OutPathEdit.Width := 700;
+		OutPathEdit.Height := 26;
+		OutPathEdit.Text := DEFAULT_OUT;
+		BtnRun := New Button.Create;
+		BtnRun.Parent := Self;
+		BtnRun.Left := 16;
+		BtnRun.Top := 84;
+		BtnRun.Width := 220;
+		BtnRun.Height := 32;
+		BtnRun.Text := "Прогнать спайк";
+		BtnRun.OnClick := RunSpikeOnClick;
+		BtnSaveReport := New Button.Create;
+		BtnSaveReport.Parent := Self;
+		BtnSaveReport.Left := 246;
+		BtnSaveReport.Top := 84;
+		BtnSaveReport.Width := 220;
+		BtnSaveReport.Height := 32;
+		BtnSaveReport.Text := "Сохранить отчёт в файл";
+		BtnSaveReport.OnClick := SaveReportOnClick;
+		BtnProbeSel := New Button.Create;
+		BtnProbeSel.Parent := Self;
+		BtnProbeSel.Left := 476;
+		BtnProbeSel.Top := 84;
+		BtnProbeSel.Width := 380;
+		BtnProbeSel.Height := 32;
+		BtnProbeSel.Text := "Проба: что видит Memo (сначала щёлкните в тексте)";
+		BtnProbeSel.OnClick := ProbeSelOnClick;
+		BtnProbeIns := New Button.Create;
+		BtnProbeIns.Parent := Self;
+		BtnProbeIns.Left := 16;
+		BtnProbeIns.Top := 122;
+		BtnProbeIns.Width := 420;
+		BtnProbeIns.Height := 30;
+		BtnProbeIns.Text := "Проба: вставка через SelText (сначала выделите слово)";
+		BtnProbeIns.OnClick := ProbeSelTextOnClick;
+		LogMemo := New Memo.Create;
+		LogMemo.Parent := Self;
+		LogMemo.Left := 16;
+		LogMemo.Top := 160;
+		LogMemo.Width := 964;
+		LogMemo.Height := 448;
+		LogMemo.ReadOnly := True;
+		LogMemo.WordWrap := False;
+		LogMemo.ScrollBars := ControlScrollStyle.Both;
+		Log("Спайк готов. Укажите сборку и нажмите «Прогнать спайк»." + CRLF_);
+	End Sub FormOnCreate;
+
+	// ===========================================================================================
+	// КНОПКА: прогнать все проверки
+	// ===========================================================================================
+	Sub RunSpikeOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		AsmId: String;
+	Begin
+		AsmId := String.Trim(AsmIdEdit.Text);
+		Report := "";
+		Log("==== СПАЙК РЕДАКТОРА FORE ====");
+		Log("Сборка: «" + AsmId + "»");
+		Log("Папка отчёта: " + String.Trim(OutPathEdit.Text));
+		Log("");
+		SpikeMemo(AsmId);
+		SpikeForeServices(AsmId);
+		SpikeAssemblyBinary(AsmId);
+		SpikeAssembly(AsmId);
+		Log("--- 5) GetMetadata: ПРОПУЩЕНО — в этом рантайме документ метаданных не разбирается");
+		Log("     (parsed = FALSE, падение в XMLLib2.dll) — словарь берём из docs/forsite/api-index.txt");
+		Log("");
+		Log("==== СПАЙК ЗАВЕРШЁН. Сохранить отчёт — кнопка «Сохранить отчёт в файл». ====");
+		LogMemo.Text := Report;
+	End Sub RunSpikeOnClick;
+
+	// --- 1) Поведение Memo: SelStart/SelLength/SelText + большой текст (модуль сборки) ---
+	Sub SpikeMemo(AsmId: String);
+	Var
+		MB: IMetabase;
+		Modul: IModule;
+		Text, Probe: String;
+	Begin
+		Log("--- 1) Memo: выделение и большой текст ---");
+		Try
+			LogMemo.Text := "0123456789ABCDEF";
+			// ⚠ Отчёт 17.09.2026 01:39 (заливка без правки порядка): SelText вернул «012345».
+			// Проверяем ОБА порядка и читаем значения обратно — чтобы понять, работает ли задание
+			// выделения вообще (у части контролов оно применяется только в фокусе).
+			LogMemo.SelLength := 6;
+			LogMemo.SelStart := 4;
+			Probe := LogMemo.SelText;
+			Log("  «SelLength → SelStart»: SelStart = " + LogMemo.SelStart.ToString
+				+ ", SelLength = " + LogMemo.SelLength.ToString + ", SelText = «" + Probe + "»");
+			LogMemo.SelStart := 4;
+			LogMemo.SelLength := 6;
+			Probe := LogMemo.SelText;
+			Log("  «SelStart → SelLength»: SelStart = " + LogMemo.SelStart.ToString
+				+ ", SelLength = " + LogMemo.SelLength.ToString + ", SelText = «" + Probe + "»");
+			If Probe = "456789" Then
+				Log("  SelStart/SelLength/SelText — РАБОТАЮТ (выделение задаётся)");
+			Else
+				Log("  ⚠ выделение НЕ задаётся ни одним порядком (SelText = «" + Probe + "»)");
+				Log("     вывод: переход к строке делаем через список «Проблемы» + прокрутку (вариант A),");
+				Log("     а выделение — как дополнительный бонус, если стенд его «оживит» в фокусе");
+			End If;
+		Except On e: Exception Do
+			Log("  ⚠ Memo.SelStart/SelText: исключение — " + e.Message);
+		End Try;
+		Try
+			MB := MetabaseClass.Active;
+			Modul := MB.ItemById("SCHEDULER").Bind As IModule;
+			Text := Modul.Text;
+			Log("  модуль SCHEDULER: " + Text.Length.ToString + " символов");
+			LogMemo.Text := Text;                                  // загрузка большого текста
+			Log("  большой текст вставлен в Memo — оцените скорость (прокрутка, ввод) вручную");
+		Except On e: Exception Do
+			Log("  ⚠ чтение модуля SCHEDULER: исключение — " + e.Message);
+		End Try;
+		Log("");
+	End Sub SpikeMemo;
+
+	// --- 2) IForeServices / IForeRuntime ---
+	Sub SpikeForeServices(AsmId: String);
+	Var
+		MB: IMetabase;
+		ForeService: IForeServices;
+		Runtime: IForeRuntime;
+	Begin
+		Log("--- 2) IForeServices / IForeRuntime ---");
+		Try
+			MB := MetabaseClass.Active;
+			ForeService := MB As IForeServices;
+			Log("  MetabaseClass.Active As IForeServices — ок");
+		Except On e: Exception Do
+			Log("  ⚠ IForeServices не получен: " + e.Message);
+			Log("");
+			Return;
+		End Try;
+		Try
+			Runtime := ForeService.GetRuntime;
+			Log("  GetRuntime — ок (IForeRuntime получен)");
+		Except On e: Exception Do
+			Log("  ⚠ GetRuntime: " + e.Message);
+			Log("");
+			Return;
+		End Try;
+		Log("");
+	End Sub SpikeForeServices;
+
+	// --- 3) IForeAssemblyBinary: состояние компиляции, скрытые ссылки, время ---
+	Sub SpikeAssemblyBinary(AsmId: String);
+	Var
+		ForeService: IForeServices;
+		Runtime: IForeRuntime;
+		Bin: IForeAssemblyBinary;
+		Hidden: Array Of string;
+		S: String;
+	Begin
+		Log("--- 3) IForeAssemblyBinary (состояние компиляции) ---");
+		Try
+			ForeService := MetabaseClass.Active As IForeServices;
+			Runtime := ForeService.GetRuntime;
+			Bin := Runtime.ResolveAssembly(AsmId);
+		Except On e: Exception Do
+			Log("  ⚠ ResolveAssembly(«" + AsmId + "»): " + e.Message);
+			Log("");
+			Return;
+		End Try;
+		Try
+			If Bin.CheckCompiled Then
+				Log("  CheckCompiled = True — сборка скомпилирована без ошибок");
+			Else
+				Log("  CheckCompiled = False — В СБОРКЕ ЕСТЬ ОШИБКИ КОМПИЛЯЦИИ");
+			End If;
+			Log("  IsLoaded = " + Bin.IsLoaded.ToString);
+			Log("  Builtin = " + Bin.Builtin.ToString);
+			Log("  Name / Namespace_ / ObjectName: " + Bin.Name + " / " + Bin.Namespace_ + " / " + Bin.ObjectName);
+			// ⚠ Bin.Version — не строка (в отчёте вышло «168298638»): «.ToString» на нём даёт ошибку,
+			// поэтому значение склеиваем напрямую, без .ToString (в отличие от Bin.TimeStamp).
+			Log("  Version = " + Bin.Version + ", TimeStamp = " + Bin.TimeStamp.ToString);
+		Except On e: Exception Do
+			Log("  ⚠ свойства IForeAssemblyBinary: " + e.Message);
+		End Try;
+		Try
+			Hidden := Bin.HiddenReferences;
+			Log("  HiddenReferences: " + Hidden.Length.ToString);
+			For Each S In Hidden Do
+				Log("    — " + S + " (время компиляции: " + Bin.GetReferenceTimeStamp(S).ToString + ")");
+			End For;
+		Except On e: Exception Do
+			Log("  ⚠ HiddenReferences: " + e.Message);
+		End Try;
+		Log("");
+	End Sub SpikeAssemblyBinary;
+
+	// --- 4) IForeAssembly: классы и подпрограммы (основа автодополнения) ---
+	Sub SpikeAssembly(AsmId: String);
+	Var
+		ForeService: IForeServices;
+		Runtime: IForeRuntime;
+		Assm: IForeAssembly;
+		FClass: IForeClass;
+		FSub: IForeSub;
+		Name: String;
+		I, J, Limit: Integer;
+	Begin
+		Log("--- 4) IForeAssembly: классы и подпрограммы ---");
+		Try
+			ForeService := MetabaseClass.Active As IForeServices;
+			Runtime := ForeService.GetRuntime;
+			Assm := Runtime.BindToAssembly(AsmId);
+		Except On e: Exception Do
+			Log("  ⚠ BindToAssembly(«" + AsmId + "»): " + e.Message);
+			Log("     (это и есть момент компиляции сборки — важен текст исключения)");
+			Log("");
+			Return;
+		End Try;
+		Try
+			Log("  ClassesCount = " + Assm.ClassesCount.ToString);
+			Limit := Assm.ClassesCount - 1;
+			If Limit > 39 Then
+				Limit := 39;                                       // в отчёт — первые 40 классов
+			End If;
+			I := 0;
+			While I <= Limit Do
+				FClass := Assm.ClassItem(I);
+				If IsNull(FClass) Then
+					Log("    [" + I.ToString + "] (Null)");
+				Else
+					Name := FClass.Name;
+					Log("    [" + I.ToString + "] " + Name + "  (родитель: " + FClass.ParentName
+						+ ", подпрограмм: " + FClass.SubsCount.ToString + ")");
+					J := FClass.SubsCount - 1;
+					If J > 4 Then
+						J := 4;                                    // по 5 подпрограмм на класс
+					End If;
+					While J >= 0 Do
+						FSub := FClass.SubItem(J);
+						If Not IsNull(FSub) Then
+							Log("         - " + FSub.Name + " (модуль: " + FSub.ModuleName
+								+ ", конструктор: " + FSub.IsConstructor.ToString
+								+ ", статическая: " + FSub.IsStatic.ToString + ")");
+						End If;
+						J := J - 1;
+					End While;
+				End If;
+				I := I + 1;
+			End While;
+		Except On e: Exception Do
+			Log("  ⚠ перечисление классов/подпрограмм: " + e.Message);
+		End Try;
+		Try
+			FClass := Assm.BindToClass("SCHEDULERForm");
+			If IsNull(FClass) Then
+				Log("  BindToClass(«SCHEDULERForm») = Null — такого класса в сборке нет");
+			Else
+				Log("  BindToClass(«SCHEDULERForm») — ок, подпрограмм: " + FClass.SubsCount.ToString);
+			End If;
+		Except On e: Exception Do
+			Log("  ⚠ BindToClass: " + e.Message);
+		End Try;
+		Log("");
+	End Sub SpikeAssembly;
+
+	// --- 5) Метаданные сборки в XML — ШАГ ВЫКЛЮЧЕН ---
+	// На стенде (17.09.2026) GetMetadata возвращает Xml.IXmlDomDocument, но документ НЕ разобран
+	// (parsed = FALSE, readyState = 4, nodeType = 9), свойство xml пустое, а обращение к членам падает
+	// внутри XMLLib2.dll (Access violation) — ошибка повторяется на каждой строке работы с документом.
+	// Поэтому шаг не вызывается: словарь автодополнения берём из своего индекса API
+	// (docs/forsite/api-index.txt, генератор tools/make-api-index.py) и из IForeAssembly.
+	// Если стенд обновят — вернуть можно так:
+	//   Bin := Runtime.ResolveAssembly(AsmId);
+	//   MetaXml := Bin.GetMetadata.xml;      // и снова сохранять файл метаданных
+
+	// ===========================================================================================
+	// Отчёт и файлы
+	// ===========================================================================================
+	Sub Log(Line: String);
+	Begin
+		Report := Report + Line + CRLF_;
+	End Sub Log;
+
+	// ===========================================================================================
+	// Проба 1a: ЧТО ВИДИТ Memo прямо сейчас (ничего не задаём — только читаем)
+	// Как проверять: прогнать спайк (в Memo появится отчёт), затем ЩЁЛКНУТЬ МЫШЬЮ в середине текста
+	// Memo, выделить мышью пару слов и нажать эту кнопку. По отчёту увидим, читаются ли
+	// SelStart/SelLength/SelText после обычного клика/выделения — от этого зависит автодополнение
+	// (вставка в позицию курсора) и «перейти к строке» через выделение.
+	// ===========================================================================================
+	Sub ProbeSelOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Log("");
+		Log("--- 1a) Memo: что видит контрол СЕЙЧАС ---");
+		Try
+			Log("  длина текста: " + LogMemo.Text.Length.ToString + " символов");
+			Log("  SelStart = " + LogMemo.SelStart.ToString
+				+ ", SelLength = " + LogMemo.SelLength.ToString);
+			Log("  SelText = «" + LogMemo.SelText + "»");
+			If (LogMemo.SelStart > 0) Or (LogMemo.SelLength > 0) Then
+				Log("  ВЫВОД: выделение ЧИТАЕТСЯ — можно делать «перейти к строке» и вставку автодополнения");
+			Else
+				Log("  ВЫВОД: выделение не читается — работаем через списки (структура/проблемы)");
+			End If;
+		Except On e: Exception Do
+			Log("  ⚠ чтение выделения: " + e.Message);
+		End Try;
+		Log("");
+		LogMemo.Text := Report;                                  // вернуть отчёт на экран
+	End Sub ProbeSelOnClick;
+
+	// ===========================================================================================
+	// Проба 1b: ЗАПИСЬ SelText — от неё зависит вставка автодополнения
+	// Как проверять: прогнать спайк, затем ЩЁЛКНУТЬ и ВЫДЕЛИТЬ МЫШЬЮ слово в тексте Memo,
+	// нажать эту кнопку. Проба: запоминает текст, пишет маркер в выделение, читает результат
+	// (и позицию курсора после записи), затем ВОССТАНАВЛИВАЕТ текст как был.
+	// Если запись работает — автодополнение вставляем прямо в позицию курсора (текст не «прыгает»),
+	// если нет — вставку делаем перезаписью Text (курсор придётся ставить вручную).
+	// ===========================================================================================
+	Sub ProbeSelTextOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Saved, After, Frag: String;
+		Pos, Len, St, W: Integer;
+	Begin
+		Log("");
+		Log("--- 1b) Замена выделения через SelText ---");
+		Try
+			Pos := LogMemo.SelStart;
+			Len := LogMemo.SelLength;
+			Log("  до записи: SelStart = " + Pos.ToString + ", SelLength = " + Len.ToString);
+			If Len <= 0 Then
+				Log("  ⚠ сначала выделите мышью слово в тексте Memo и нажмите кнопку ещё раз");
+			Else
+				Saved := LogMemo.Text;
+				LogMemo.SelText := "«ЗАМЕНА»";                     // ← проверяем ЗАПИСЬ SelText
+				After := LogMemo.Text;
+				Log("  после записи: длина текста " + After.Length.ToString
+					+ ", SelStart = " + LogMemo.SelStart.ToString
+					+ ", SelLength = " + LogMemo.SelLength.ToString);
+				St := Pos - 5;
+				If St < 0 Then
+					St := 0;
+				End If;
+				W := 30;
+				If St + W > After.Length Then
+					W := After.Length - St;
+				End If;
+				Frag := "";
+				If W > 0 Then
+					Frag := After.SubString(St, W);
+				End If;
+				Log("  фрагмент вокруг позиции: «" + Frag + "»");
+				LogMemo.Text := Saved;                             // возвращаем текст как был
+				If After.IndexOf("ЗАМЕНА") >= 0 Then
+					Log("  ВЫВОД: SelText ПИШЕТСЯ — вставку автодополнения делаем им (курсор не «прыгает»)");
+				Else
+					Log("  ВЫВОД: SelText не пишется — вставку делаем перезаписью Text");
+				End If;
+			End If;
+		Except On e: Exception Do
+			Log("  ⚠ запись SelText: исключение — " + e.Message);
+			Log("     вывод: вставку делаем перезаписью Text (курсор придётся ставить вручную)");
+		End Try;
+		Log("");
+		LogMemo.Text := Report;
+	End Sub ProbeSelTextOnClick;
+
+	Sub SaveReportOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		FileName: String;
+	Begin
+		FileName := Path.Combine(String.Trim(OutPathEdit.Text), "editor-spike-report.txt");
+		If WriteText(FileName, Report) Then
+			LogMemo.Text := Report + CRLF_ + "Отчёт сохранён: " + FileName;
+			WinApplication.InformationBox("Отчёт сохранён:" + CRLF_ + FileName);
+		End If;
+	End Sub SaveReportOnClick;
+
+	// --- Запись текста в файл: UTF-8, кодировка задаётся ДО первой записи ---
+	Function WriteText(FullPath, Text: String): Boolean;
+	Var
+		Writer: ITextWriter;
+	Begin
+		Try
+			Writer := File.OpenTextWriter(FullPath, False);
+			Try
+				Writer.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Спайк: кодировку записи задать не удалось — " + e.Message);
+			End Try;
+			Writer.WriteString(Text);
+			Writer.Flush;
+			Return True;
+		Except On e: Exception Do
+			WinApplication.InformationBox("Файл не записан: " + FullPath + CRLF_ + e.Message);
+			Return False;
+		End Try;
+	End Function WriteText;
+End Class EDITORSPIKEForm;

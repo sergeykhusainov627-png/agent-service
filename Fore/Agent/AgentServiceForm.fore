@@ -1,0 +1,983 @@
+// ID: AGENTSERVICE  // идентификатор объекта формы на стенде; класс формы = <Id> + Form
+// ============================================================================
+//  AgentServiceForm — пульт агента: интерфейс строится фабрикой экранов,
+//  работа с репозиторием — через файловый канал (без мыши и клавиатуры).
+//
+//  ЭКРАН (весь интерфейс создаётся кодом из spec, спроектированных контролов нет):
+//    поля «Модуль» и «Сборка», кнопки операций, журнал, таймер опроса.
+//
+//  КАНАЛ:
+//    inbox\cmd.txt   ← внешний инструмент кладёт команду
+//    outbox\out.txt  ← сюда пишется результат, outbox\done.txt — маркер
+//    backup\         ← бэкапы модулей перед записью
+//
+//  ФОРМАТ КОМАНД:
+//    OP=PING | INFO | LIST | READ | WRITE | COMPILE
+//    MOD=<идентификатор модуля>       (для READ/WRITE)
+//    ASM=<идентификатор сборки>       (для COMPILE)
+//    TEXT                             (для WRITE: далее идёт новый текст модуля)
+//
+//  КАК ПРИМЕНИТЬ:
+//    1) создать объект «Форма» с идентификатором AGENTSERVICE;
+//    2) вставить этот модуль целиком (класс AGENTSERVICEForm);
+//    3) привязать события формы: OnCreate → AGENTSERVICEFormOnCreate,
+//       OnClose → AGENTSERVICEFormOnClose;
+//    4) ссылки сборок формы: Forms, Ui, System, Collections, Metabase, Fore, Io
+//       (+ сборка с модулем UiFactory);
+//    5) запустить форму и нажать «Запустить канал» — таймер начнёт опрос файла.
+//
+//  ПРОВЕРЕНО ПО ОБРАЗЦУ: Fore\UiFactoryDemo.fore (та же обвязка: UiSpecsFromText →
+//  UiCreate → UiButtonsOf + подписка OnClick → UiNameOfCtl в одном обработчике).
+// ============================================================================
+
+Const
+	AGS_CRLF = #13 + #10;
+	// Корень обмена. ВНИМАНИЕ: путь должен совпадать с реальным.
+	AGS_ROOT = "F:\\Scheduler Tasks\\AgentService";
+	AGS_IN_DIR = AGS_ROOT + "\\inbox";
+	AGS_OUT_DIR = AGS_ROOT + "\\outbox";
+	AGS_BACKUP_DIR = AGS_ROOT + "\\backup";
+	AGS_CMD_FILE = AGS_IN_DIR + "\\cmd.txt";
+	AGS_OUT_FILE = AGS_OUT_DIR + "\\out.txt";
+	AGS_DONE_FILE = AGS_OUT_DIR + "\\done.txt";
+	// Самообновление канала
+	AGS_RESTART_FLAG = AGS_IN_DIR + "\\restart.flag";   // «закройся для обновления»
+	AGS_HEARTBEAT = AGS_OUT_DIR + "\\heartbeat.txt";    // «я жив» (для сторожа)
+	// Период опроса файла-команды, мс
+	AGS_POLL_MS = 1000;
+
+Class AGENTSERVICEForm: Form
+	// --- состояние экрана (как в UiFactoryDemo) ---
+	Map_: SortedList;                  // «имя → компонент»
+	Specs_: ArrayList;                 // описание экрана данными
+	Buttons_: ArrayList;               // кнопки для общей подписки
+	Reply_: String;                    // накопитель ответа текущей команды
+	Ticks_: Integer;                   // сколько тактов отработал таймер
+
+	// ========================================================================
+	//  1) СОЗДАНИЕ ФОРМЫ: строим экран по описанию
+	// ========================================================================
+	Sub AGENTSERVICEFormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		Self.Width := 900;
+		Self.Height := 460;
+		Ticks_ := 0;
+		BuildScreen;
+		Log_("Пульт агента готов. Компонентов: " + Map_.Count.ToString);
+		Log_("Команды: " + AGS_CMD_FILE);
+		Log_("Ответы:  " + AGS_OUT_FILE);
+	End Sub AGENTSERVICEFormOnCreate;
+
+	// ========================================================================
+	//  2) ЗАКРЫТИЕ: обязательно освобождаем компоненты
+	// ========================================================================
+	Sub AGENTSERVICEFormOnClose(Sender: Object; Args: IEventArgs);
+	Var
+		Tm: Timer;
+	Begin
+		Tm := UiFind(Map_, "TmrPoll") As Timer;
+		If Not IsNull(Tm) Then
+			Tm.Enabled := False;
+		End If;
+		UiFree(Map_);
+		Map_ := Null;
+		Debug.WriteLine("AgentService: форма закрыта, канал остановлен");
+	End Sub AGENTSERVICEFormOnClose;
+
+	// ========================================================================
+	//  3) ОПИСАНИЕ ЭКРАНА (данные, а не дизайнер)
+	// ========================================================================
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"# Kind;Name;Caption;Left;Top;Width;Height;Handler;Lines/Value;Min;Max[;Parent=Имя]" + AGS_CRLF
+			+ "LABEL;LblMod;Модуль:;10;14;60;20" + AGS_CRLF
+			+ "EDIT;EdMod;TASK_PLANNER;74;12;220;24" + AGS_CRLF
+			+ "LABEL;LblAsm;Сборка:;304;14;54;20" + AGS_CRLF
+			+ "EDIT;EdAsm;UNVAIL_ASSEMBLY;362;12;220;24" + AGS_CRLF
+			+ "BUTTON;BtnStart;Запустить канал;594;11;130;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnStop;Остановить;730;11;150;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnPing;Проверить связь;10;50;140;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnInfo;Инфо о репозитории;158;50;150;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnList;Список объектов;316;50;140;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnRead;Прочитать модуль;464;50;140;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnCompile;Скомпилировать;612;50;140;26;AgsButtonClick" + AGS_CRLF
+			+ "BUTTON;BtnClear;Очистить журнал;760;50;120;26;AgsButtonClick" + AGS_CRLF
+			+ "LABEL;LblStatus;канал остановлен;10;86;860;20" + AGS_CRLF
+			+ "MEMO;MmoLog;;10;112;870;300;;— журнал пульта —" + AGS_CRLF
+			+ "TIMER;TmrPoll;;0;0;0;0;;" + AGS_POLL_MS.ToString;
+	End Function ScreenSpecText;
+
+	// ========================================================================
+	//  4) ПОСТРОЕНИЕ ЭКРАНА
+	// ========================================================================
+	Sub BuildScreen;
+	Var
+		Tm: Timer;
+		Btn: Button;
+		I: Integer;
+	Begin
+		If Not IsNull(Map_) Then
+			UiFree(Map_);
+			Map_ := Null;
+		End If;
+		Specs_ := UiSpecsFromText(ScreenSpecText);
+		Map_ := UiCreate(Self, Specs_);
+		Buttons_ := UiButtonsOf(Map_, Specs_);
+		For I := 0 To Buttons_.Count - 1 Do
+			Btn := Buttons_.Item(I) As Button;
+			Btn.OnClick := AgsButtonClick;          // подписка на событие кодом
+		End For;
+		Tm := UiFind(Map_, "TmrPoll") As Timer;
+		If Not IsNull(Tm) Then
+			Tm.OnTimer := AgsTimerTick;
+			Tm.Enabled := False;                     // канал включается кнопкой
+		End If;
+	End Sub BuildScreen;
+
+	// ========================================================================
+	//  5) ОДИН ОБРАБОТЧИК ВСЕХ КНОПОК (разбор по имени, как в UiFactoryDemo)
+	// ========================================================================
+	Sub AgsButtonClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Name, ModuleId, Asm: String;
+		Resp: String;
+	Begin
+		Name := UiNameOfCtl(Sender);
+		ModuleId := String.Trim(UiCtlText(Map_, "EdMod"));
+		Asm := String.Trim(UiCtlText(Map_, "EdAsm"));
+
+		If Name = "BtnStart" Then
+			EnsureDirs;
+			UiSetTimerEnabled(Map_, "TmrPoll", True);
+			UiSetCtlText(Map_, "LblStatus", "канал запущен, опрос каждые " + AGS_POLL_MS.ToString + " мс");
+			Log_("канал запущен");
+			Return;
+		End If;
+		If Name = "BtnStop" Then
+			UiSetTimerEnabled(Map_, "TmrPoll", False);
+			UiSetCtlText(Map_, "LblStatus", "канал остановлен");
+			Log_("канал остановлен");
+			Return;
+		End If;
+		If Name = "BtnClear" Then
+			UiMemoClear(Map_, "MmoLog");
+			Log_("журнал очищен");
+			Return;
+		End If;
+		If Name = "BtnPing" Then
+			Resp := EngineRun("OP=PING");
+		Elseif Name = "BtnInfo" Then
+			Resp := EngineRun("OP=INFO");
+		Elseif Name = "BtnList" Then
+			Resp := EngineRun("OP=LIST");
+		Elseif Name = "BtnRead" Then
+			Resp := EngineRun("OP=READ" + AGS_CRLF + "MOD=" + ModuleId);
+		Elseif Name = "BtnCompile" Then
+			Resp := EngineRun("OP=COMPILE" + AGS_CRLF + "ASM=" + Asm);
+		Else
+			Log_("неизвестная кнопка: " + Name);
+			Return;
+		End If;
+
+		// Результат и в журнал экрана, и в файл ответа
+		Log_("--- " + Name + " ---");
+		Log_(Resp);
+		UiSetCtlText(Map_, "LblStatus", "выполнено: " + Name + ", в " + DateTime.Now.ToString);
+	End Sub AgsButtonClick;
+
+	// ========================================================================
+	//  6) ТАКТ ТАЙМЕРА: проверка файла-команды
+	// ========================================================================
+	Sub AgsTimerTick(Sender: Object; Args: IEventArgs);
+	Var
+		Reader: ITextReader;
+		Command, Resp: String;
+	Begin
+		Ticks_ := Ticks_ + 1;
+		Try
+			// Отметка «я жив» — по ней сторож понимает, что канал работает
+			MarkerBeat;
+
+			// Запрос на перезапуск: новый код уже записан и проверен прошивкой,
+			// каналу остаётся закрыть окно.
+			If File.Exists(AGS_RESTART_FLAG) Then
+				UISetCtlTextSafe("перезапуск: закрываю окно");
+				SelfClose;
+				Return;
+			End If;
+
+			If Not File.Exists(AGS_CMD_FILE) Then
+				// Раз в минуту показываем, что канал жив
+				If Ticks_ Mod 60 = 0 Then
+					UiSetCtlText(Map_, "LblStatus", "канал работает, тактов: " + Ticks_.ToString);
+				End If;
+				Return;
+			End If;
+			Command := "";
+			Try
+				Reader := File.OpenTextReader(AGS_CMD_FILE);
+				Try
+					Reader.Encoding := CodePage.UTF8;
+				Except On e: Exception Do
+					Debug.WriteLine("AgentService: кодировка чтения — " + e.Message);
+				End Try;
+				If Not Reader.Eof Then
+					Command := Reader.ReadToEnd;
+				End If;
+				// ВАЖНО: освобождаем читатель, иначе файл остаётся занятым
+				// и File.Delete ниже падает с CPIOException «файл занят другим процессом».
+				Dispose Reader;
+				Reader := Null;
+			Except On e: Exception Do
+				Log_("! команда не прочитана: " + e.Message);
+				Dispose Reader;
+				Reader := Null;
+				Return;
+			End Try;
+
+			// Удаляем файл ПОСЛЕ закрытия читателя: тогда он уже не занят.
+			// Если не удалось — не страшно: файл перезапишет следующий запуск CLI,
+			// а повторное выполнение исключено проверкой done.txt на стороне клиента.
+			Try
+				If File.Exists(AGS_CMD_FILE) Then
+					File.Delete(AGS_CMD_FILE);
+				End If;
+			Except On e: Exception Do
+				Debug.WriteLine("AgentService: файл команды не удалён — " + e.Message);
+			End Try;
+
+			If IsNull(Command) Then
+				Return;
+			End If;
+			If String.Trim(Command) = "" Then
+				Return;
+			End If;
+
+			Log_("=== команда из файла ===");
+			Resp := EngineRun(Command);
+			Log_(Resp);
+			UiSetCtlText(Map_, "LblStatus", "команда обработана: " + DateTime.Now.ToString);
+		Except On e: Exception Do
+			// Обработчик таймера обязан быть защищён: исключение не должно закрыть форму
+			Log_("! ОШИБКА в цикле опроса: " + e.Message);
+		End Try;
+	End Sub AgsTimerTick;
+
+	// ========================================================================
+	//  6-бис) САМООБНОВЛЕНИЕ: ЧТО ЗДЕСЬ МОЖНО, А ЧТО НЕЛЬЗЯ
+	//
+	//  НЕЛЬЗЯ: канал не может сам скомпилировать свою сборку. Компиляция
+	//  сборки, загруженной в текущий процесс, роняет процесс
+	//  (Access violation в KeSom.dll). Поэтому проверку сборки делает
+	//  ПРОШИВКА — она живёт в отдельной сборке.
+	//
+	//  МОЖНО: канал сам снимает признак своей жизни и закрывает окно.
+	//  Дальше приложение должно запустить его заново — уже с новым кодом,
+	//  который к этому моменту записала и проверила прошивка.
+	//
+	//  Порядок самообновления целиком:
+	//    1) я прошу прошивку: записать новую версию канала и скомпилировать;
+	//    2) прошивка при ошибке откатывает канал (он продолжает работать);
+	//    3) при успехе я прошу канал закрыться;
+	//    4) приложение запускает канал заново — с новым кодом.
+	// ========================================================================
+	Sub SelfClose;
+	Begin
+		Log_("=== ЗАКРЫТИЕ ПО ЗАПРОСУ ОБНОВЛЕНИЯ ===");
+		Log_("новый код уже записан и проверен прошивкой");
+		// Снимаем отметку: по её устареванию сторож поймёт, что канал ушёл
+		Try
+			If File.Exists(AGS_HEARTBEAT) Then
+				File.Delete(AGS_HEARTBEAT);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: отметка не удалена — " + e.Message);
+		End Try;
+		Try
+			If File.Exists(AGS_RESTART_FLAG) Then
+				File.Delete(AGS_RESTART_FLAG);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: флаг не удалён — " + e.Message);
+		End Try;
+		// У формы нет метода Close: закрытие делается скрытием,
+		// OnClose при этом освобождает компоненты (UiFactoryDemo.fore:135)
+		Self.Visible := False;
+		Debug.WriteLine("AgentService: окно скрыто, ожидаю перезапуск приложения");
+	End Sub SelfClose;
+
+	// Отметка «я жив»: сторож по её свежести понимает, что канал работает
+	Sub MarkerBeat;
+	Var
+		TxtWriter: ITextWriter;
+	Begin
+		Try
+			TxtWriter := File.OpenTextWriter(AGS_HEARTBEAT, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("AgentService: кодировка отметки — " + e.Message);
+			End Try;
+			TxtWriter.WriteString(DateTime.Now.ToString);
+			TxtWriter.Flush;
+			Dispose TxtWriter;
+			TxtWriter := Null;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: отметка не записана — " + e.Message);
+		End Try;
+	End Sub MarkerBeat;
+
+	// Безопасная установка текста статуса (компонент может быть уже освобождён)
+	Sub UISetCtlTextSafe(S: String);
+	Begin
+		Try
+			If Not IsNull(Map_) Then
+				UiSetCtlText(Map_, "LblStatus", S);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: статус не обновлён — " + e.Message);
+		End Try;
+	End Sub UISetCtlTextSafe;
+
+	// ВНИМАНИЕ: здесь СОЗНАТЕЛЬНО нет функции компиляции сборки. Канал живёт
+	// в проверяемой сборке, и вызов BindToAssembly/ResolveAssembly для неё
+	// роняет процесс (Access violation в KeSom.dll). Компиляцию делает
+	// прошивка — она в отдельной сборке (`kcompile <Asm>`).
+
+	// ========================================================================
+	//  7) ДВИЖОК: выполнение команды и запись ответа в файл
+	// ========================================================================
+	Function EngineRun(Command: String): String;
+	Var
+		TxtWriter: ITextWriter;
+	Begin
+		Reply_ := "";
+		EngineExecute(Command);
+		Append_("END=1");
+		// Ответ — в файл (UTF-8: кодировка задаётся ДО первой записи)
+		Try
+			EnsureDirs;
+			TxtWriter := File.OpenTextWriter(AGS_OUT_FILE, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("AgentService: кодировка вывода — " + e.Message);
+			End Try;
+			TxtWriter.WriteString(Reply_);
+			TxtWriter.Flush;
+			// Освобождаем писатель: иначе файл остаётся занятым для других процессов
+			Dispose TxtWriter;
+			TxtWriter := Null;
+
+			TxtWriter := File.OpenTextWriter(AGS_DONE_FILE, False);
+			TxtWriter.WriteString(DateTime.Now.ToString);
+			TxtWriter.Flush;
+			Dispose TxtWriter;
+			TxtWriter := Null;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: ответ не записан — " + e.Message);
+		End Try;
+		Return Reply_;
+	End Function EngineRun;
+
+	Sub EngineExecute(Command: String);
+	Var
+		Op, ModuleId, Payload: String;
+	Begin
+		Op := ParamOf(Command, "OP");
+		ModuleId := ParamOf(Command, "MOD");
+		Payload := PayloadOf(Command);
+		Append_("AGENT=AgentService");
+		Append_("OP=" + Op);
+		If Op = "PING" Then
+			DoPing;
+		Elseif Op = "INFO" Then
+			DoInfo;
+		Elseif Op = "LIST" Then
+			DoList;
+		Elseif Op = "READ" Then
+			DoRead(ModuleId);
+		Elseif Op = "WRITE" Then
+			DoWrite(ModuleId, Payload);
+		Elseif Op = "COMPILE" Then
+			DoCompile(ParamOf(Command, "ASM"));
+		Elseif Op = "LISTASM" Then
+			DoListAsm(ParamOf(Command, "ASM"));
+		Elseif Op = "EXISTS" Then
+			DoExists(ModuleId);
+		Elseif Op = "REFS" Then
+			DoRefs(ModuleId);
+		Elseif Op = "MKMOD" Then
+			DoMkMod(ModuleId, Payload);
+		Elseif Op = "MKASM" Then
+			DoMkAsm(ParamOf(Command, "ASM"));
+		Else
+			Append_("STATUS=ERR");
+			Append_("MSG=неизвестная команда OP=" + Op);
+		End If;
+	End Sub EngineExecute;
+
+	// ========================================================================
+	//  8) ОПЕРАЦИИ
+	// ========================================================================
+	Sub DoPing;
+	Begin
+		Append_("STATUS=OK");
+		Append_("WHAT=PING");
+		Append_("TIME=" + DateTime.Now.ToString);
+		Append_("MSG=канал работает");
+	End Sub DoPing;
+
+	Sub DoInfo;
+	Var
+		MB: IMetabase;
+	Begin
+		MB := MetabaseClass.Active;
+		If IsNull(MB) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=нет активного репозитория");
+			Return;
+		End If;
+		Append_("STATUS=OK");
+		Append_("WHAT=INFO");
+		Append_("REPO=" + MB.Definition.Name);
+		Append_("ROOT_ID=" + MB.Root.Id);
+		Append_("ROOT_NAME=" + MB.Root.Name);
+		Append_("ROOT_CHILDREN=" + MB.Root.Children.Count.ToString);
+		Append_("TIME=" + DateTime.Now.ToString);
+	End Sub DoInfo;
+
+	Sub DoList;
+	Var
+		MB: IMetabase;
+		Kids: IMetabaseObjectDescriptors;
+		I: Integer;
+	Begin
+		MB := MetabaseClass.Active;
+		Kids := MB.Root.Children;
+		Append_("STATUS=OK");
+		Append_("WHAT=LIST");
+		Append_("COUNT=" + Kids.Count.ToString);
+		For I := 0 To Kids.Count - 1 Do
+			Append_("ITEM=" + Kids.Item(I).Id + "|" + Kids.Item(I).Name + "|" + Kids.Item(I).ClassId.ToString);
+		End For;
+	End Sub DoList;
+
+	Sub DoRead(ModuleId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		Text: String;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не найден: " + ModuleId);
+			Return;
+		End If;
+		M := Null;
+		Try
+			M := Desc.Bind As IModule;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("MSG=не модуль: " + e.Message);
+			Return;
+		End Try;
+		If IsNull(M) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не является модулем: " + ModuleId);
+			Return;
+		End If;
+		Text := M.Text;
+		If IsNull(Text) Then
+			Text := "";
+		End If;
+		Append_("STATUS=OK");
+		Append_("WHAT=READ");
+		Append_("MOD=" + ModuleId);
+		Append_("NAME=" + Desc.Name);
+		Append_("CHARS=" + Text.Length.ToString);
+		Append_("TEXT");
+		Append_(Text);
+	End Sub DoRead;
+
+	Sub DoWrite(ModuleId, Payload: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		OldText, BackupFile: String;
+		TxtWriter: ITextWriter;
+		Saved: Boolean;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не найден: " + ModuleId);
+			Return;
+		End If;
+		Try
+			M := Desc.Bind As IModule;
+			OldText := M.Text;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("MSG=не удалось прочитать модуль: " + e.Message);
+			Return;
+		End Try;
+		If IsNull(OldText) Then
+			OldText := "";
+		End If;
+
+		// Бэкап: не создался — запись отменяется
+		BackupFile := AGS_BACKUP_DIR + "\\" + ModuleId + "_" + StampOf + ".fore";
+		Try
+			EnsureDirs;
+			TxtWriter := File.OpenTextWriter(BackupFile, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("AgentService: кодировка бэкапа — " + e.Message);
+			End Try;
+			TxtWriter.WriteString(OldText);
+			TxtWriter.Flush;
+			// Освобождаем писатель, иначе файл бэкапа останется занятым
+			Dispose TxtWriter;
+			TxtWriter := Null;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("MSG=бэкап не создан, запись отменена: " + e.Message);
+			Return;
+		End Try;
+
+		Saved := False;
+		Try
+			M := Desc.Edit As IModule;
+			M.Text := Payload;
+			If M.Modified Then
+				(M As IMetabaseObject).Save;
+			End If;
+			Saved := True;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("MSG=запись не удалась: " + e.Message);
+		End Try;
+
+		If Saved Then
+			Append_("STATUS=OK");
+			Append_("WHAT=WRITE");
+			Append_("MOD=" + ModuleId);
+			Append_("OLD_CHARS=" + OldText.Length.ToString);
+			Append_("NEW_CHARS=" + Payload.Length.ToString);
+			Append_("BACKUP=" + BackupFile);
+		End If;
+	End Sub DoWrite;
+
+	// Компиляция ЧУЖОЙ сборки. Свою сборку компилировать нельзя: она загружена
+	// в текущий процесс, и это роняет его (Access violation в KeSom.dll).
+	// Для сборки канала используйте прошивку: kcompile AGENT_SERVICE.
+	Sub DoCompile(Asm: String);
+	Var
+		MB: IMetabase;
+		Svc: IForeServices;
+		Rt: IForeRuntime;
+		A: IForeAssembly;
+		Bin: IForeAssemblyBinary;
+		Hidden: Array Of String;
+		I: Integer;
+	Begin
+		If Asm = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан ASM");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Svc := MB As IForeServices;
+		If IsNull(Svc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=репозиторий не приводится к IForeServices");
+			Return;
+		End If;
+		Rt := Svc.GetRuntime;
+		// BindToAssembly — это и есть компиляция
+		Try
+			A := Rt.BindToAssembly(Asm);
+			Append_("BIND=OK");
+			Append_("CLASSES=" + A.ClassesCount.ToString);
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=COMPILE");
+			Append_("MSG=BindToAssembly: " + e.Message);
+			Return;
+		End Try;
+		Try
+			Bin := Rt.ResolveAssembly(Asm);
+			Append_("STATUS=OK");
+			Append_("WHAT=COMPILE");
+			Append_("ASM=" + Asm);
+			Append_("CHECK_COMPILED=" + Bin.CheckCompiled.ToString);
+			Append_("IS_LOADED=" + Bin.IsLoaded.ToString);
+			Append_("BUILTIN=" + Bin.Builtin.ToString);
+			Append_("TIME_STAMP=" + Bin.TimeStamp.ToString);
+			Try
+				Hidden := Bin.HiddenReferences;
+				Append_("HIDDEN_REFS=" + Hidden.Length.ToString);
+				For I := 0 To Hidden.Length - 1 Do
+					Append_("HIDDEN=" + Hidden[I]);
+				End For;
+			Except On e: Exception Do
+				Append_("WARN=HiddenReferences: " + e.Message);
+			End Try;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=COMPILE");
+			Append_("MSG=ResolveAssembly: " + e.Message);
+		End Try;
+	End Sub DoCompile;
+
+	// OP=LISTASM, ASM=<идентификатор сборки> — состав сборки: модули, формы, классы
+	Sub DoListAsm(Asm: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		Kids: IMetabaseObjectDescriptors;
+		M: IModule;
+		Text: String;
+		I, Total: Integer;
+	Begin
+		If Asm = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан ASM");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(Asm);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=сборка не найдена: " + Asm);
+			Return;
+		End If;
+		Kids := Desc.Children;
+		Total := Kids.Count;
+		Append_("STATUS=OK");
+		Append_("WHAT=LISTASM");
+		Append_("ASM=" + Asm);
+		Append_("NAME=" + Desc.Name);
+		Append_("COUNT=" + Total.ToString);
+		For I := 0 To Total - 1 Do
+			Text := "";
+			Try
+				M := Kids.Item(I).Bind As IModule;
+				If Not IsNull(M) Then
+					If Not IsNull(M.Text) Then
+						Text := M.Text;
+					End If;
+				End If;
+			Except On e: Exception Do
+				Text := "";
+			End Try;
+			Append_("ITEM=" + Kids.Item(I).Id + "|" + Kids.Item(I).Name + "|" +
+				Kids.Item(I).ClassId.ToString + "|" + Text.Length.ToString);
+		End For;
+	End Sub DoListAsm;
+
+	// OP=EXISTS, MOD=<идентификатор> — есть ли объект и что это за класс
+	Sub DoExists(ModuleId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		Append_("STATUS=OK");
+		Append_("WHAT=EXISTS");
+		Append_("MOD=" + ModuleId);
+		If IsNull(Desc) Then
+			Append_("FOUND=False");
+		Else
+			Append_("FOUND=True");
+			Append_("NAME=" + Desc.Name);
+			Append_("CLASS=" + Desc.ClassId.ToString);
+		End If;
+	End Sub DoExists;
+
+	// OP=REFS, MOD=<идентификатор> — на какие сборки ссылается модуль.
+	// Нужно, чтобы выгружать модули с правильными ссылками, а не подбирать их.
+	// ВНИМАНИЕ: IAssembly.References — это СТРОКА с разделителем «;»
+	// (справка: References: String), а не коллекция.
+	Sub DoRefs(ModuleId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		Asm: IAssembly;
+		RefsStr: String;
+		Parts: Array Of String;
+		I: Integer;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не найден: " + ModuleId);
+			Return;
+		End If;
+		M := Null;
+		Asm := Null;
+		RefsStr := "";
+		Try
+			M := Desc.Bind As IModule;
+			If Not IsNull(M) Then
+				Asm := M.Assembly;
+			End If;
+			If Not IsNull(Asm) Then
+				RefsStr := Asm.References;
+			End If;
+		Except On e: Exception Do
+			Append_("WARN=ссылки прочитать не удалось: " + e.Message);
+		End Try;
+		Append_("STATUS=OK");
+		Append_("WHAT=REFS");
+		Append_("MOD=" + ModuleId);
+		If IsNull(M) Then
+			Append_("IS_MODULE=False");
+			Return;
+		End If;
+		Append_("IS_MODULE=True");
+		If IsNull(RefsStr) Then
+			RefsStr := "";
+		End If;
+		RefsStr := String.Trim(RefsStr);
+		If RefsStr = "" Then
+			Append_("REFS_COUNT=0");
+			Append_("MSG=у сборки нет дополнительных ссылок");
+			Return;
+		End If;
+		Parts := RefsStr.Split(Char.Chr(59));            // 59 — символ «;»
+		Append_("REFS_COUNT=" + Parts.Length.ToString);
+		For I := 0 To Parts.Length - 1 Do
+			If String.Trim(Parts[I]) <> "" Then
+				Append_("REF=" + String.Trim(Parts[I]));
+			End If;
+		End For;
+	End Sub DoRefs;
+
+	// OP=MKMOD, MOD=<идентификатор>, далее TEXT и содержимое.
+	// Создаёт модуль, если его нет; если есть — заменяет текст.
+	Sub DoMkMod(ModuleId, Payload: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		Info: IMetabaseObjectCreateInfo;
+		Created: Boolean;
+		OldChars: Integer;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		Created := False;
+		OldChars := 0;
+
+		If IsNull(Desc) Then
+			// Модуля нет — создаём
+			Try
+				Info := MB.CreateCreateInfo;
+				Info.Id := ModuleId;
+				Info.Name := ModuleId;
+				Info.ClassId := MetabaseObjectClass.KE_CLASS_MODULE;
+				Desc := MB.CreateObject(Info).Edit;
+				Created := True;
+			Except On e: Exception Do
+				Append_("STATUS=ERR");
+				Append_("WHAT=MKMOD");
+				Append_("MSG=не удалось создать модуль: " + e.Message);
+				Return;
+			End Try;
+		End If;
+
+		Try
+			M := Desc.Edit As IModule;
+			If Not IsNull(M.Text) Then
+				OldChars := M.Text.Length;
+			End If;
+			M.Text := Payload;
+			(M As IMetabaseObject).Save;
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=MKMOD");
+			Append_("CREATED=" + Created.ToString);
+			Append_("MSG=текст не записан: " + e.Message);
+			Return;
+		End Try;
+
+		Append_("STATUS=OK");
+		Append_("WHAT=MKMOD");
+		Append_("MOD=" + ModuleId);
+		Append_("CREATED=" + Created.ToString);
+		Append_("OLD_CHARS=" + OldChars.ToString);
+		Append_("NEW_CHARS=" + Payload.Length.ToString);
+	End Sub DoMkMod;
+
+	// OP=MKASM, ASM=<идентификатор> — создать сборку, если её нет.
+	// Сборка нужна как контейнер для модулей проекта.
+	Sub DoMkAsm(Asm: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		Info: IMetabaseObjectCreateInfo;
+		Created: Boolean;
+	Begin
+		If Asm = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан ASM");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(Asm);
+		Created := False;
+		If IsNull(Desc) Then
+			Try
+				Info := MB.CreateCreateInfo;
+				Info.Id := Asm;
+				Info.Name := Asm;
+				Info.ClassId := MetabaseObjectClass.KE_CLASS_ASSEMBLY;
+				Desc := MB.CreateObject(Info).Edit;
+				Created := True;
+			Except On e: Exception Do
+				Append_("STATUS=ERR");
+				Append_("WHAT=MKASM");
+				Append_("MSG=не удалось создать сборку: " + e.Message);
+				Return;
+			End Try;
+		End If;
+		Append_("STATUS=OK");
+		Append_("WHAT=MKASM");
+		Append_("ASM=" + Asm);
+		Append_("CREATED=" + Created.ToString);
+		Append_("NAME=" + Desc.Name);
+		Append_("CHILDREN=" + Desc.Children.Count.ToString);
+	End Sub DoMkAsm;
+
+	// ========================================================================
+	//  9) ВСПОМОГАТЕЛЬНОЕ
+	// ========================================================================
+	Sub Append_(Line: String);
+	Begin
+		Reply_ := Reply_ + Line + AGS_CRLF;
+	End Sub Append_;
+
+	Sub Log_(S: String);
+	Begin
+		UiMemoAdd(Map_, "MmoLog", S);
+		Debug.WriteLine(S);
+	End Sub Log_;
+
+	// Проверено на стенде: Directory.CreateDirectory БРОСАЕТ CPIOException,
+	// если папка уже существует («Невозможно создать файл, так как он уже
+	// существует»). Поэтому сначала проверяем Directory.Exists.
+	Sub EnsureOneDir(Path: String);
+	Begin
+		Try
+			If Not Directory.Exists(Path) Then
+				Directory.CreateDirectory(Path);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("AgentService: папку не создать (" + Path + ") — " + e.Message);
+		End Try;
+	End Sub EnsureOneDir;
+
+	Sub EnsureDirs;
+	Begin
+		EnsureOneDir(AGS_IN_DIR);
+		EnsureOneDir(AGS_OUT_DIR);
+		EnsureOneDir(AGS_BACKUP_DIR);
+	End Sub EnsureDirs;
+
+	Function StampOf: String;
+	Var
+		D: DateTime;
+		P2: String;
+	Begin
+		D := DateTime.Now;
+		P2 := D.Minute.ToString;
+		If D.Minute < 10 Then
+			P2 := "0" + P2;
+		End If;
+		Return D.Year.ToString + "-" + D.Month.ToString + "-" + D.Day.ToString +
+			"_" + D.Hour.ToString + P2 + D.Second.ToString;
+	End Function StampOf;
+
+	// Ключ=значение из строки команды; пусто, если ключа нет
+	Function ParamOf(Text, Key: String): String;
+	Var
+		Lines: Array Of String;
+		Line: String;
+		I: Integer;
+	Begin
+		Lines := Text.Split(Char.Chr(10));
+		For I := 0 To Lines.Length - 1 Do
+			Line := String.Trim(Lines[I]);
+			If Line.IndexOf(Key + "=") = 0 Then
+				Return String.Trim(Line.SubString(Key.Length + 1, Line.Length - Key.Length - 1));
+			End If;
+		End For;
+		Return "";
+	End Function ParamOf;
+
+	// Тело команды: всё после строки TEXT
+	Function PayloadOf(Text: String): String;
+	Var
+		Lines: Array Of String;
+		I, Pos: Integer;
+		Acc: String;
+	Begin
+		Lines := Text.Split(Char.Chr(10));
+		Pos := -1;
+		For I := 0 To Lines.Length - 1 Do
+			If String.Trim(Lines[I]) = "TEXT" Then
+				Pos := I;
+				Break;
+			End If;
+		End For;
+		If Pos < 0 Then
+			Return "";
+		End If;
+		Acc := "";
+		For I := Pos + 1 To Lines.Length - 1 Do
+			If I > Pos + 1 Then
+				Acc := Acc + AGS_CRLF;
+			End If;
+			Acc := Acc + Lines[I];
+		End For;
+		Return Acc;
+	End Function PayloadOf;
+
+End Class AGENTSERVICEForm;

@@ -1,0 +1,158 @@
+// ID: UISCREENDEMO  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Фабрика экранов: ФОРМА-ДЕМОНСТРАЦИЯ. ВЕСЬ интерфейс создаётся КОДОМ из текстового описания (spec).
+// В объекте формы НЕТ ни одного спроектированного контрола — экран собирается в OnCreate.
+// Как применить (5 минут):
+//   1) создать объект «Форма», класс модуля назвать UISCREENDEMOForm (имя класса = имя формы);
+//   2) вставить этот модуль целиком;
+//   3) привязать события формы: OnCreate → UiFactoryDemoFormOnCreate, OnClose → UiFactoryDemoFormOnClose;
+//   4) ссылки сборок формы: Forms, Ui, System, Collections (+ сборка с UiFactory.fore).
+//   5) запустить: видно 20+ компонентов (группы, поля, списки, журнал, прогресс, таймер), все кнопки
+//      работают через ОДИН обработчик, а состав экрана меняется правкой текста DemoSpecText.
+// Проверка: node tools/fore-lint-check.js Fore → 0 предупреждений.
+
+Const
+	UIDEMO_CRLF = #13 + #10;
+
+Class UISCREENDEMOForm: Form
+	// --- состояние экрана ---
+	Map_: SortedList;                  // «имя → компонент», созданные фабрикой
+	Specs_: ArrayList;                 // описание экрана (данные, а не дизайнер)
+	Buttons_: ArrayList;
+	Tick_: Integer;
+
+	// === 1) Создание формы: строим экран по описанию ===
+	Sub UiFactoryDemoFormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		Self.Width := 900;
+		Self.Height := 440;
+		Tick_ := 0;
+		BuildDemoScreen;
+		Log_("Экран собран фабрикой: компонентов " + Map_.Count.ToString);
+	End Sub UiFactoryDemoFormOnCreate;
+
+	// === 2) Закрытие формы: ОБЯЗАТЕЛЬНО освобождаем созданные компоненты (иначе утечка) ===
+	Sub UiFactoryDemoFormOnClose(Sender: Object; Args: IEventArgs);
+	Begin
+		UiSetTimerEnabled(Map_, "TmrTick", False);
+		UiFree(Map_);                  // FreeComponent + Dispose по каждому компоненту
+		Map_ := Null;
+	End Sub UiFactoryDemoFormOnClose;
+
+	// === 3) Описание экрана (можно держать в файле/таблице и менять без правки кода) ===
+	// Формат: Kind;Name;Caption;Left;Top;Width;Height;Handler;Значение;Min;Max;Parent
+	Function DemoSpecText: String;
+	Begin
+		Return
+			"# Kind;Name;Caption;Left;Top;Width;Height;Handler;Lines/Value;Min;Max[;Parent=Имя]" + UIDEMO_CRLF
+			+ "# Координаты компонента внутри контейнера — ОТНОСИТЕЛЬНО его клиентской области (клиент — 0;0)," + UIDEMO_CRLF
+			+ "# поэтому у детей групп они уменьшены на положение группы (10;10 и 455;10)." + UIDEMO_CRLF
+			+ "GROUP;GrpLeft;Данные (создано кодом);10;10;430;300" + UIDEMO_CRLF
+			+ "LABEL;LblTask;Задача:;14;30;80;20;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "EDIT;EdTask;TASK_SALES_REPORT;98;28;310;24;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "LABEL;LblFrom;Период с:;14;64;80;20;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "PICKER;DpFrom;;98;62;140;24;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "LABEL;LblBa;Бизнес-приложение:;14;96;170;20;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "COMBO;CmbBa;;190;94;218;24;;БП «Продажи»|БП «Склад»|БП «Хранилище»;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "CHECK;ChkSkip;Не запускать (снять флажок = перепланировать);14;126;330;20;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "LISTBOX;LstTasks;;14;154;394;96;;TASK_A|TASK_B|TASK_C|TASK_D;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "BUTTON;BtnLoad;Загрузить;14;258;120;26;UiDemoButtonClick;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "BUTTON;BtnSave;Сохранить;142;258;120;26;UiDemoButtonClick;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "BUTTON;BtnLog;Добавить в журнал;270;258;138;26;UiDemoButtonClick;Parent=GrpLeft" + UIDEMO_CRLF
+			+ "GROUP;GrpRight;Журнал и управление экраном;455;10;430;302" + UIDEMO_CRLF
+			+ "MEMO;MmoLog;;14;26;402;212;;— экран собран фабрикой —;Parent=GrpRight" + UIDEMO_CRLF
+			+ "BUTTON;BtnClear;Очистить журнал;14;248;140;26;UiDemoButtonClick;Parent=GrpRight" + UIDEMO_CRLF
+			+ "BUTTON;BtnRebuild;Пересобрать экран;162;248;140;26;UiDemoButtonClick;Parent=GrpRight" + UIDEMO_CRLF
+			+ "BUTTON;BtnStart;Таймер +;310;248;106;26;UiDemoButtonClick;Parent=GrpRight" + UIDEMO_CRLF
+			+ "BUTTON;BtnStop;Таймер −;14;259;140;26;UiDemoButtonClick;Parent=GrpRight" + UIDEMO_CRLF
+			+ "PROGRESS;PrgWork;;10;330;875;20;;0;0;100" + UIDEMO_CRLF
+			+ "LABEL;LblStatus;готово;10;360;400;20" + UIDEMO_CRLF
+			+ "BUTTON;BtnExit;Закрыть форму;760;356;125;26;UiDemoButtonClick" + UIDEMO_CRLF
+			+ "TIMER;TmrTick;;0;0;0;0;;500";
+	End Function DemoSpecText;
+
+	// === 4) Построение/пересборка экрана ===
+	Sub BuildDemoScreen;
+	Var
+		Tm: Timer;
+		Btn: Button;
+		I: Integer;
+	Begin
+		If Not IsNull(Map_) Then
+			UiFree(Map_);                    // пересборка: сначала освобождаем прежние компоненты
+			Map_ := Null;
+		End If;
+		Specs_ := UiSpecsFromText(DemoSpecText);
+		Map_ := UiCreate(Self, Specs_);      // Self — форма-родитель
+		Buttons_ := UiButtonsOf(Map_, Specs_);
+		For I := 0 To Buttons_.Count - 1 Do
+			Btn := Buttons_.Item(I) As Button;
+			Btn.OnClick := UiDemoButtonClick;          // подписка на событие КОДОМ
+		End For;
+		Tm := UiFind(Map_, "TmrTick") As Timer;
+		If Not IsNull(Tm) Then
+			Tm.OnTimer := UiDemoTimerTick;             // невизуальный компонент: Parent не нужен
+		End If;
+	End Sub BuildDemoScreen;
+
+	// === 5) Один ОБЩИЙ обработчик всех кнопок: разбор по имени (Sender → Name) ===
+	// Так вместо 9 отдельных процедур достаточно одной — это и есть «фабричный» приём.
+	Sub UiDemoButtonClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Name, Decision: String;
+	Begin
+		Name := UiNameOfCtl(Sender);
+		If Name = "BtnLoad" Then
+			Log_("Загружено: " + UiCtlText(Map_, "EdTask") + " | период: " + UiCtlText(Map_, "DpFrom"));
+		End If;
+		If Name = "BtnSave" Then
+			Decision := "перепланировать";
+			If UiChecked(Map_, "ChkSkip") Then
+				Decision := "не запускать";
+			End If;
+			Log_("Сохранено: " + UiCtlText(Map_, "EdTask") + " → " + Decision
+				+ " | БП: " + UiCtlText(Map_, "CmbBa"));
+		End If;
+		If Name = "BtnLog" Then
+			Log_("ручная запись в журнал: " + UiCtlText(Map_, "LblStatus"));
+		End If;
+		If Name = "BtnClear" Then
+			UiMemoClear(Map_, "MmoLog");
+			Log_("журнал очищен");
+		End If;
+		If Name = "BtnRebuild" Then
+			BuildDemoScreen;                           // UiFree внутри + создание заново
+			Log_("экран пересобран: компонентов " + Map_.Count.ToString);
+		End If;
+		If Name = "BtnStart" Then
+			UiSetTimerEnabled(Map_, "TmrTick", True);
+			Log_("таймер включён");
+		End If;
+		If Name = "BtnStop" Then
+			UiSetTimerEnabled(Map_, "TmrTick", False);
+			Log_("таймер выключен");
+		End If;
+		If Name = "BtnExit" Then
+			Self.Visible := False;                     // закрыть форму (OnClose освободит компоненты)
+		End If;
+	End Sub UiDemoButtonClick;
+
+	// === 6) Такт таймера: двигаем ProgressBar и пишем в журнал ===
+	Sub UiDemoTimerTick(Sender: Object; Args: IEventArgs);
+	Begin
+		Tick_ := Tick_ + 1;
+		UiSetProgress(Map_, "PrgWork", Tick_ * 10);
+		UiSetCtlText(Map_, "LblStatus", "такт " + Tick_.ToString);
+		Log_("таймер: такт " + Tick_.ToString);
+		If Tick_ >= 10 Then
+			UiSetTimerEnabled(Map_, "TmrTick", False);
+			Log_("таймер остановлен (10 тактов)");
+		End If;
+	End Sub UiDemoTimerTick;
+
+	// === 7) Запись в журнал экрана (Memo, созданный фабрикой) ===
+	Sub Log_(S: String);
+	Begin
+		UiMemoAdd(Map_, "MmoLog", S);
+	End Sub Log_;
+
+End Class UISCREENDEMOForm;

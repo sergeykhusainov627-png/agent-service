@@ -1,0 +1,294 @@
+// ID: PLANTEXT  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма «Текст плана» (PLANTEXTForm) — окно результатов: АНАЛИЗ РАСКЛАДКИ КОНТЕЙНЕРА таблицей
+// (грид ListView с заголовками столбцов) либо план «текстом» (Memo). Что показано — копируется
+// в буфер обмена (таблица выгружается текстом с табуляцией: вставка в Excel разложит по столбцам).
+// Окно закрывается крестиком заголовка (как окно ответственного).
+// Открытие из «Планировщика» (одна форма на все случаи):
+//   F := New PLANTEXTForm.CreateForm(Self As IWin32Window);
+//   F.SendCommand("SetCaption", "Анализ раскладки контейнера");  // заголовок окна
+//   F.SendCommand("ShowAnalysis", Контейнер.Id);                 // таблица анализа (Id контейнера)
+//   F.SendCommand("ShowText", Текст);                            // либо просто текст
+//   F.ShowModal;
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+
+Const
+	// Колонки таблицы анализа. Первая колонка задаётся при добавлении строки (Item.Text),
+	// поэтому «Задача» = 0 и отдельной константы для неё нет — счёт идёт с «Название».
+	AN_COL_NAME = 1;      // Название
+	AN_COL_QUEUE = 2;     // Очередь (Class_)
+	AN_COL_AVG = 3;       // Ср. длительность, с
+	AN_COL_START = 4;     // Плановый старт
+	AN_COL_CONTAINER = 5; // Контейнер, из которого задача получена (анализ по нескольким)
+
+Public Class PLANTEXTForm: Form
+	LayoutK: Double;
+	Map_: SortedList;
+	TxtMemo: Memo;               // текстовый режим; в режиме таблицы хранит её TSV-копию
+	AnGrid: ListView;            // таблица анализа (создаётся кодом: тип LISTVIEW фабрика не создаёт)
+	LblInfo: Label;              // строка-заголовок: задач / суммарная длительность / окно
+	BtnCopy: Button;
+	GridMode: Boolean;           // True — показана таблица, False — текст
+	PendingText: String;         // текст, пришедший командой до создания контролов
+	PendingContainers: String;   // Id контейнеров («A;B;C») для анализа, пришедшие до создания контролов
+
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		LayoutK := 1.0;
+		Self.Width := Double.RoundInt(900 * LayoutK);
+		Self.Height := Double.RoundInt(660 * LayoutK);
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), LayoutK);
+		GridMode := False;
+		Try
+			TxtMemo := UiFind(Map_, "TxtMemo");
+			LblInfo := UiFind(Map_, "LblInfo");
+			BtnCopy := UiFind(Map_, "BtnCopy");
+			If Not IsNull(TxtMemo) Then
+				TxtMemo.ReadOnly := True;
+				TxtMemo.WordWrap := True;
+				TxtMemo.ScrollBars := ControlScrollStyle.Both;
+			End If;
+			If Not IsNull(BtnCopy) Then
+				BtnCopy.OnClick := CopyOnClick;
+			End If;
+			SetupAnalysisGrid;                     // таблица анализа — конструктором, как PlanTable
+			If PendingContainers <> "" Then
+				ShowAnalysis(PendingContainers);   // команда пришла до OnCreate — показываем сейчас
+			Else
+				If PendingText <> "" Then
+					ShowText(PendingText);
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Текст плана: контролы не получены — " + e.Message);
+		End Try;
+	End Sub FormOnCreate;
+
+	// Команды от «Планировщика»: SetCaption — заголовок окна, ShowText — текст,
+	// ShowAnalysis — таблица анализа раскладки (аргумент: Id контейнеров задач через «;»)
+	Sub PlanTextFormOnCommand(Sender: Object; Args: ICommandEventArgs);
+	Begin
+		If Args.Command = "SetCaption" Then
+			Self.Text := UnvVarToStr(Args.Argument);
+			Args.Result := True;
+		End If;
+		If Args.Command = "ShowText" Then
+			ShowText(UnvVarToStr(Args.Argument));
+			Args.Result := True;
+		End If;
+		If Args.Command = "ShowAnalysis" Then
+			ShowAnalysis(UnvVarToStr(Args.Argument));
+			Args.Result := True;
+		End If;
+	End Sub PlanTextFormOnCommand;
+
+	// Таблица анализа раскладки: ListView вида «отчёт» — заголовки столбцов и сетка.
+	// Тип LISTVIEW описание экрана не поддерживает, поэтому таблицу создаём конструктором
+	// (как PlanTable/StoredPlanTable в форме «Планировщик») и ставим на место Memo: в режиме
+	// таблицы Memo скрыт, в текстовом — скрыт грид (AnGrid.Visible/TxtMemo.Visible).
+	Sub SetupAnalysisGrid;
+	Var
+		Col: IListViewColumn;
+	Begin
+		Try
+			If IsNull(AnGrid) Then
+				AnGrid := New ListView.Create;
+				AnGrid.Parent := Self;
+			End If;
+			AnGrid.Style := ListViewStyle.Report;     // без Report список рисует значки, а не таблицу
+			AnGrid.GridLines := True;                 // сетка между строками и столбцами
+			AnGrid.RowSelect := True;                 // выделяется строка целиком
+			AnGrid.ShowColumnHeaders := True;         // заголовки столбцов
+			AnGrid.ReadOnly := True;                  // текст ячеек не редактируется
+			AnGrid.MultiSelect := False;
+			// Колонки создаём только если их ещё нет: в Инспекторе их можно задать вручную.
+			// «Название» тянется по ширине окна, остальные — фиксированные (см. SetListColumn).
+			If AnGrid.Columns.Count = 0 Then
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Задача", 200, False, TextAlignment.Left);
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Название", 190, True, TextAlignment.Left);
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Очередь", 70, False, TextAlignment.Center);
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Ср. длительность, с", 120, False, TextAlignment.Center);
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Плановый старт", 138, False, TextAlignment.Center);
+				Col := AnGrid.Columns.Add;
+				SetListColumn(Col, "Контейнер", 110, False, TextAlignment.Left);
+			End If;
+			AnGrid.Left := Double.RoundInt(16 * LayoutK);
+			AnGrid.Top := Double.RoundInt(42 * LayoutK);
+			AnGrid.Width := Double.RoundInt(868 * LayoutK);
+			AnGrid.Height := Double.RoundInt(520 * LayoutK);
+			AnGrid.Visible := False;                  // показывается только в режиме таблицы
+		Except On e: Exception Do
+			Debug.WriteLine("Анализ раскладки: таблица не создана — " + e.Message);
+			AnGrid := Null;                           // в этом случае работает текстовый режим
+		End Try;
+	End Sub SetupAnalysisGrid;
+
+	// Таблица анализа раскладки: задача → очередь, средняя длительность, плановый старт, контейнер.
+	// Контейнеры берём по Id (аргумент команды, «A;B;C») — объекты между формами не передаём.
+	Sub ShowAnalysis(ContainerIds: String);
+	Var
+		Containers: ArrayList;
+		Infos: ArrayList;
+	Begin
+		PendingContainers := String.Trim(ContainerIds);
+		GridMode := True;
+		If IsNull(AnGrid) Then
+			// Таблица не создалась (или команда пришла до OnCreate) — резерв: анализ текстом
+			GridMode := False;
+			ShowAnalysisText;
+			ApplyMode;
+			Return;
+		End If;
+		Try
+			Infos := Null;
+			Containers := ContainersFromIds(PendingContainers);
+			If Containers.Count = 0 Then
+				AnGrid.Items.Clear;
+				SetMemoLines(TxtMemo, "");
+				If Not IsNull(LblInfo) Then
+					LblInfo.Text := "Контейнеры не найдены: «" + PendingContainers + "»";
+				End If;
+				ApplyMode;
+				Return;
+			End If;
+			Infos := BuildPlanInfosForContainers(Containers);
+			FillAnalysisGrid(Infos);
+			ApplyMode;
+		Except On e: Exception Do
+			// Окно не должно остаться пустым: показываем причину текстом (как было раньше)
+			Debug.WriteLine("Анализ раскладки: построение таблицы — " + e.Message);
+			GridMode := False;
+			SetMemoLines(TxtMemo, "Не удалось построить таблицу анализа: " + e.Message);
+			If Not IsNull(LblInfo) Then
+				LblInfo.Text := "";
+			End If;
+			ApplyMode;
+		End Try;
+	End Sub ShowAnalysis;
+
+	// Резерв, если таблица недоступна: тот же анализ — текстом (как было до перехода на грид).
+	// Текст кладём в Memo, режим — текстовый (кнопка «Копировать» отдаст именно его).
+	Sub ShowAnalysisText;
+	Var
+		Containers: ArrayList;
+	Begin
+		If IsNull(TxtMemo) Then
+			Return;
+		End If;
+		Try
+			If PendingContainers = "" Then
+				SetMemoLines(TxtMemo, "Контейнеры не заданы");
+				Return;
+			End If;
+			Containers := ContainersFromIds(PendingContainers);
+			If Containers.Count = 0 Then
+				SetMemoLines(TxtMemo, "Контейнеры не найдены: «" + PendingContainers + "»");
+				Return;
+			End If;
+			SetMemoLines(TxtMemo, PlanText(Containers));
+		Except On e: Exception Do
+			Debug.WriteLine("Анализ раскладки: текст-резерв — " + e.Message);
+			SetMemoLines(TxtMemo, "Не удалось построить анализ: " + e.Message);
+		End Try;
+	End Sub ShowAnalysisText;
+
+	// Заполнение таблицы: первый столбец задаётся при добавлении строки, остальные — через ColumnText.
+	// Тот же набор данных кладём в Memo текстом с разделителем-табуляцией: кнопка «Копировать»
+	// отдаёт готовую таблицу (вставка в Excel раскладывает по столбцам).
+	Sub FillAnalysisGrid(Infos: ArrayList);
+	Var
+		Info: CTaskInfo;
+		Item: IListViewItem;
+		I: Integer;
+		Avg, S: String;
+	Begin
+		AnGrid.Items.Clear;
+		SetMemoLines(TxtMemo, "");
+		If IsNull(Infos) Then
+			If Not IsNull(LblInfo) Then
+				LblInfo.Text := "Задач: 0";
+			End If;
+			Return;
+		End If;
+		S := "";
+		AnGrid.Items.BeginUpdate;
+		For I := 0 To Infos.Count - 1 Do
+			Info := Infos.Item(I) As CTaskInfo;
+			Avg := Double.RoundInt(Info.AvgSeconds).ToString;   // секунды — целым числом
+			AnGrid.Items.Add(Info.Id);
+			Item := AnGrid.Items.Item(AnGrid.Items.Count - 1);
+			Item.ColumnText(AN_COL_NAME) := Info.Name;
+			Item.ColumnText(AN_COL_QUEUE) := Info.Queue.ToString;
+			Item.ColumnText(AN_COL_AVG) := Avg;
+			Item.ColumnText(AN_COL_START) := Info.PlannedStart.ToString;
+			Item.ColumnText(AN_COL_CONTAINER) := Info.ContainerId;
+			S := S + Info.Id + #9 + Info.Name + #9 + Info.Queue.ToString + #9 + Avg + #9
+				+ Info.PlannedStart.ToString + #9 + Info.ContainerId + #13 + #10;
+		End For;
+		AnGrid.Items.EndUpdate;
+		SetMemoLines(TxtMemo, S);
+		If Not IsNull(LblInfo) Then
+			LblInfo.Text := PlanInfosHeader(Infos);
+		End If;
+	End Sub FillAnalysisGrid;
+
+	// Режим показа: таблица анализа или текст (переключается видимостью; данные готовы в обоих)
+	Sub ApplyMode;
+	Begin
+		Try
+			If Not IsNull(AnGrid) Then
+				AnGrid.Visible := GridMode;
+			End If;
+			If Not IsNull(TxtMemo) Then
+				TxtMemo.Visible := Not GridMode;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Текст плана: переключение режима — " + e.Message);
+		End Try;
+	End Sub ApplyMode;
+
+	Sub ShowText(T: String);
+	Begin
+		PendingText := T;
+		GridMode := False;
+		If IsNull(TxtMemo) Then
+			Return;
+		End If;
+		Try
+			SetMemoLines(TxtMemo, T);
+			If Not IsNull(LblInfo) Then
+				LblInfo.Text := "";                   // строка-заголовок относится только к таблице
+			End If;
+			ApplyMode;
+		Except On e: Exception Do
+			Debug.WriteLine("Текст плана: вывод — " + e.Message);
+		End Try;
+	End Sub ShowText;
+
+	Sub CopyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Try
+			TxtMemo.SelectAll;
+			TxtMemo.CopyToClipboard;
+			If GridMode Then
+				WinApplication.InformationBox("Таблица скопирована в буфер обмена — вставка в Excel разложит по столбцам");
+			Else
+				WinApplication.InformationBox("Текст скопирован в буфер обмена");
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Текст плана: копирование — " + e.Message);
+		End Try;
+	End Sub CopyOnClick;
+
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"LABEL;LblInfo;;16;16;868;20;" + #13 + #10
+			+ "MEMO;TxtMemo;;16;42;868;520;" + #13 + #10
+			+ "BUTTON;BtnCopy;Копировать в буфер;16;574;260;30;CopyOnClick";
+	End Function ScreenSpecText;
+End Class PLANTEXTForm;

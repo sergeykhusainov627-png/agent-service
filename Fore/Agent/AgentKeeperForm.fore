@@ -1,0 +1,800 @@
+// ID: AGENTKEEPER  // идентификатор объекта формы; класс формы = <Id> + Form
+// ============================================================================
+//  AgentKeeperForm — ПРОШИВКА. Второй, «неизменяемый» канал.
+//
+//  ЗАЧЕМ ДВА КАНАЛА
+//    Основной канал (AGENTSERVICE) — сменный код: я его расширяю, правлю,
+//    иногда ломаю. Прошивка (этот модуль) — минимальна и заморожена; она
+//    умеет единственное: читать и заменять модуль основного канала,
+//    компилировать сборку и ОТКАТЫВАТЬ основной канал из бэкапа.
+//
+//    Поэтому, если правка основного канала окажется неудачной, управление
+//    всё равно остаётся: прошивка жива и вернёт рабочий текст.
+//
+//  ЧЕСТНОЕ ОГРАНИЧЕНИЕ (важно понимать)
+//    Переписанный модуль не меняет уже запущенный экземпляр формы: новый
+//    текст подхватится при следующем запуске формы основного канала.
+//    Прошивка правит МОДУЛЬ, а не живой объект. Это и есть безопасный
+//    порядок: сначала заменить модуль и убедиться, что сборка компилируется,
+//    и только потом перезапускать основной канал.
+//
+//  КОМАНДЫ (через k_inbox\cmd.txt)
+//    OP=KGET                          — прочитать текст целевого модуля
+//    OP=KPUT                          — заменить текст; далее TEXT и содержимое
+//    OP=KROLLBACK                     — вернуть целевой модуль из последнего бэкапа
+//    OP=KHEALTH                       — состояние: компилируется ли сборка
+//    Целевой модуль задаётся ключом TARGET=<идентификатор>, по умолчанию
+//    AGENTSERVICE (сам основной канал).
+//
+//  ФАЙЛЫ
+//    k_inbox\cmd.txt    → команды прошивке
+//    k_outbox\out.txt   → ответы, k_outbox\done.txt — маркер
+//    backup_main\       → текст целевого модуля до правки (бэкап прошивки)
+//
+//  ЗАЧЕМ ТАКАЯ ПРОШИВКА ВООБЩЕ НУЖНА В ПРОЕКТЕ
+//    Правило: «код, который правит другой код, должен быть максимально
+//    простым». Здесь нет ни фабрики экранов, ни логики команд — только
+//    чтение, запись, компиляция, откат. Такой модуль ломается редко.
+// ============================================================================
+
+Const
+	KP_CRLF = #13 + #10;
+	// Корень обмена прошивки. Путь должен совпадать с реальным.
+	KP_ROOT = "F:\\Scheduler Tasks\\AgentService";
+	KP_IN_DIR = KP_ROOT + "\\k_inbox";
+	KP_OUT_DIR = KP_ROOT + "\\k_outbox";
+	KP_BACKUP_DIR = KP_ROOT + "\\backup_main";
+	KP_CMD_FILE = KP_IN_DIR + "\\cmd.txt";
+	KP_OUT_FILE = KP_OUT_DIR + "\\out.txt";
+	KP_DONE_FILE = KP_OUT_DIR + "\\done.txt";
+	// Модуль, которым управляет прошивка по умолчанию (канал)
+	KP_DEFAULT_TARGET = "AGENTSERVICE";
+	// Сборка, В КОТОРОЙ ЖИВЁТ САМА ПРОШИВКА.
+	// ВАЖНО: прошивка обязана работать в отдельной сборке и никогда не
+	// компилировать её. Компиляция сборки, загруженной в текущий процесс,
+	// роняет процесс (Access violation в KeSom.dll). Поэтому здесь должно
+	// стоять имя сборки прошивки, а не сборки канала.
+	KP_ASSEMBLY = "AGENT_KEEPER";
+	KP_POLL_MS = 1000;
+
+Class AGENTKEEPERForm: Form
+	// Состояние формы
+	Timer_: Timer;            // таймер опроса
+	Reply_: String;           // накопитель ответа
+	Ticks_: Integer;
+	Busy_: Boolean;           // защита от наложения тактов
+
+	// ========================================================================
+	//  ЖИЗНЕННЫЙ ЦИКЛ ФОРМЫ
+	// ========================================================================
+	Sub AGENTKEEPERFormOnCreate(Sender: Object; Args: IEventArgs);
+	Var
+		B1, B2: Button;
+		L1, L2, L3: Label;
+	Begin
+		Self.Width := 760;
+		Self.Height := 300;
+		// У Form НЕТ свойства Caption (ошибка компилятора «Неизвестный
+		// идентификатор 'Caption'»): заголовок формы берётся из имени объекта
+		// формы в репозитории, а не задаётся из кода.
+		Ticks_ := 0;
+		Busy_ := False;
+
+		// Экран собираем кодом: фабрику не тянем — прошивка должна быть простой
+		L1 := New Label.Create;
+		L1.Parent := Self;
+		L1.Left := 10;
+		L1.Top := 14;
+		L1.Width := 60;
+		L1.Height := 20;
+		L1.Text := "Цель:";
+
+		L2 := New Label.Create;
+		L2.Parent := Self;
+		L2.Left := 76;
+		L2.Top := 14;
+		L2.Width := 200;
+		L2.Height := 20;
+		L2.Text := KP_DEFAULT_TARGET;
+
+		B1 := New Button.Create;
+		B1.Parent := Self;
+		B1.Left := 290;
+		B1.Top := 10;
+		B1.Width := 130;
+		B1.Height := 26;
+		B1.Text := "Читать цель";
+		B1.OnClick := KeeperButtonClick;
+
+		B2 := New Button.Create;
+		B2.Parent := Self;
+		B2.Left := 428;
+		B2.Top := 10;
+		B2.Width := 150;
+		B2.Height := 26;
+		B2.Text := "Откатить цель";
+		B2.OnClick := KeeperButtonClick;
+
+		L3 := New Label.Create;
+		L3.Parent := Self;
+		L3.Left := 10;
+		L3.Top := 48;
+		L3.Width := 730;
+		L3.Height := 20;
+		L3.Text := "ожидание";
+
+		StartKeeper;
+
+		Debug.WriteLine("Прошивка: запущена, цель по умолчанию — " + KP_DEFAULT_TARGET);
+	End Sub AGENTKEEPERFormOnCreate;
+
+	Sub AGENTKEEPERFormOnClose(Sender: Object; Args: IEventArgs);
+	Begin
+		If Not IsNull(Timer_) Then
+			Timer_.Enabled := False;
+			Dispose Timer_;
+			Timer_ := Null;
+		End If;
+		Debug.WriteLine("Прошивка: остановлена");
+	End Sub AGENTKEEPERFormOnClose;
+
+	Sub StartKeeper;
+	Begin
+		EnsureKeeperDirs;
+		Timer_ := New Timer.Create;
+		Timer_.Interval := KP_POLL_MS;
+		Timer_.OnTimer := KeeperTick;
+		Timer_.Enabled := True;
+		Debug.WriteLine("Прошивка: опрос " + KP_CMD_FILE + " каждые " + KP_POLL_MS.ToString + " мс");
+	End Sub StartKeeper;
+
+	// ========================================================================
+	//  ОБРАБОТЧИК КНОПОК
+	// ========================================================================
+	Sub KeeperButtonClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		B: Button;
+		Resp: String;
+	Begin
+		B := Sender As Button;
+		If IsNull(B) Then
+			Return;
+		End If;
+		Try
+			If B.Text = "Читать цель" Then
+				Resp := KeeperRun("OP=KGET");
+			Else
+				Resp := KeeperRun("OP=KROLLBACK");
+			End If;
+			Debug.WriteLine(Resp);
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: ошибка кнопки — " + e.Message);
+		End Try;
+	End Sub KeeperButtonClick;
+
+	// ========================================================================
+	//  ЦИКЛ ОПРОСА
+	// ========================================================================
+	Sub KeeperTick(Sender: Object; Args: IEventArgs);
+	Var
+		Reader: ITextReader;
+		Command, Resp: String;
+	Begin
+		If Busy_ Then
+			Return;                                  // предыдущий такт ещё работает
+		End If;
+		Busy_ := True;
+		Ticks_ := Ticks_ + 1;
+		Try
+			If Not File.Exists(KP_CMD_FILE) Then
+				Busy_ := False;
+				Return;
+			End If;
+			Command := "";
+			Try
+				Reader := File.OpenTextReader(KP_CMD_FILE);
+				Try
+					Reader.Encoding := CodePage.UTF8;
+				Except On e: Exception Do
+					Debug.WriteLine("Прошивка: кодировка чтения — " + e.Message);
+				End Try;
+				If Not Reader.Eof Then
+					Command := Reader.ReadToEnd;
+				End If;
+				Dispose Reader;                  // иначе файл занят и Delete упадёт
+				Reader := Null;
+			Except On e: Exception Do
+				Debug.WriteLine("Прошивка: команда не прочитана — " + e.Message);
+				Dispose Reader;
+				Reader := Null;
+				Busy_ := False;
+				Return;
+			End Try;
+
+			Try
+				If File.Exists(KP_CMD_FILE) Then
+					File.Delete(KP_CMD_FILE);
+				End If;
+			Except On e: Exception Do
+				Debug.WriteLine("Прошивка: файл команды не удалён — " + e.Message);
+			End Try;
+
+			If (Not IsNull(Command)) And (String.Trim(Command) <> "") Then
+				Resp := KeeperRun(Command);
+				Debug.WriteLine("Прошивка: команда выполнена");
+				Debug.WriteLine(Resp);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: ОШИБКА в цикле — " + e.Message);
+		End Try;
+		Busy_ := False;
+	End Sub KeeperTick;
+
+	// ========================================================================
+	//  ДВИЖОК ПРОШИВКИ
+	// ========================================================================
+	Function KeeperRun(Command: String): String;
+	Var
+		TxtWriter: ITextWriter;
+	Begin
+		Reply_ := "";
+		KeeperExecute(Command);
+		KAppend("END=1");
+		Try
+			EnsureKeeperDirs;
+			TxtWriter := File.OpenTextWriter(KP_OUT_FILE, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Прошивка: кодировка вывода — " + e.Message);
+			End Try;
+			TxtWriter.WriteString(Reply_);
+			TxtWriter.Flush;
+			Dispose TxtWriter;
+			TxtWriter := Null;
+
+			TxtWriter := File.OpenTextWriter(KP_DONE_FILE, False);
+			TxtWriter.WriteString(DateTime.Now.ToString);
+			TxtWriter.Flush;
+			Dispose TxtWriter;
+			TxtWriter := Null;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: ответ не записан — " + e.Message);
+		End Try;
+		Return Reply_;
+	End Function KeeperRun;
+
+	Sub KeeperExecute(Command: String);
+	Var
+		Op, Target, Payload, NoCmp: String;
+	Begin
+		Op := KParam(Command, "OP");
+		Target := KParam(Command, "TARGET");
+		If Target = "" Then
+			Target := KP_DEFAULT_TARGET;
+		End If;
+		// NOCMP=1 — записать без компиляции. Нужно, когда запись идёт в сборку,
+		// загруженную в этот же процесс: компиляция такой сборки падает
+		// (Access violation в KeSom.dll). Порядок тогда: запись здесь,
+		// компиляция — после перезапуска формы.
+		NoCmp := KParam(Command, "NOCMP");
+		Payload := KPayload(Command);
+		KAppend("KEEPER=AgentKeeper");
+		KAppend("OP=" + Op);
+		KAppend("TARGET=" + Target);
+		If Op = "KGET" Then
+			KDoGet(Target);
+		Elseif Op = "KPUT" Then
+			KDoPut(Target, Payload, NoCmp = "1");
+		Elseif Op = "KROLLBACK" Then
+			KDoRollback(Target);
+		Elseif Op = "KHEALTH" Then
+			KDoHealth(KParam(Command, "ASM"));
+		Elseif Op = "KCOMPILE" Then
+			KDoCompileAsm(KParam(Command, "ASM"));
+		Else
+			KAppend("STATUS=ERR");
+			KAppend("MSG=неизвестная команда OP=" + Op);
+		End If;
+	End Sub KeeperExecute;
+
+	// ========================================================================
+	//  ОПЕРАЦИИ: ЧТЕНИЕ, ЗАМЕНА, ОТКАТ, СОСТОЯНИЕ
+	// ========================================================================
+	Sub KDoGet(Target: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		Text: String;
+	Begin
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(Target);
+		If IsNull(Desc) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=модуль не найден: " + Target);
+			Return;
+		End If;
+		M := Null;
+		Try
+			M := Desc.Bind As IModule;
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("MSG=не модуль: " + e.Message);
+			Return;
+		End Try;
+		If IsNull(M) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=объект не является модулем: " + Target);
+			Return;
+		End If;
+		Text := M.Text;
+		If IsNull(Text) Then
+			Text := "";
+		End If;
+		KAppend("STATUS=OK");
+		KAppend("WHAT=KGET");
+		KAppend("NAME=" + Desc.Name);
+		KAppend("CHARS=" + Text.Length.ToString);
+		KAppend("TEXT");
+		KAppend(Text);
+	End Sub KDoGet;
+
+	// Замена текста целевого модуля: бэкап → запись → компиляция → откат при ошибке.
+	// При NoCmp = True запись выполняется без компиляции и без отката:
+	// так обновляют модуль сборки, загруженной в текущий процесс.
+	Sub KDoPut(Target, Payload: String; NoCmp: Boolean);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		OldText, BackupFile, TargetAsm: String;
+		TxtWriter: ITextWriter;
+		Saved: Boolean;
+	Begin
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(Target);
+		If IsNull(Desc) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=модуль не найден: " + Target);
+			Return;
+		End If;
+
+		// 1. Текущий текст — для бэкапа
+		Try
+			M := Desc.Bind As IModule;
+			OldText := M.Text;
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("MSG=не удалось прочитать цель: " + e.Message);
+			Return;
+		End Try;
+		If IsNull(OldText) Then
+			OldText := "";
+		End If;
+
+		// 2. Бэкап. Не создался — не пишем вообще
+		BackupFile := KP_BACKUP_DIR + "\\" + Target + "_" + KStamp + ".fore";
+		Try
+			EnsureKeeperDirs;
+			TxtWriter := File.OpenTextWriter(BackupFile, False);
+			Try
+				TxtWriter.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Прошивка: кодировка бэкапа — " + e.Message);
+			End Try;
+			TxtWriter.WriteString(OldText);
+			TxtWriter.Flush;
+			Dispose TxtWriter;
+			TxtWriter := Null;
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("MSG=бэкап не создан, замена отменена: " + e.Message);
+			Return;
+		End Try;
+
+		// 3. Замена текста
+		Saved := False;
+		Try
+			M := Desc.Edit As IModule;
+			M.Text := Payload;
+			If M.Modified Then
+				(M As IMetabaseObject).Save;
+			End If;
+			Saved := True;
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("MSG=запись не удалась: " + e.Message);
+		End Try;
+		If Not Saved Then
+			Return;
+		End If;
+		KAppend("WROTE=True");
+		KAppend("OLD_CHARS=" + OldText.Length.ToString);
+		KAppend("NEW_CHARS=" + Payload.Length.ToString);
+		KAppend("BACKUP=" + BackupFile);
+
+		// 4. Компиляция сборки: сборка — общий «предохранитель».
+		//    При NOCMP=1 шаг пропускается: компилировать сборку, загруженную
+		//    в этот же процесс, нельзя — падает ResolveAssembly.
+		If NoCmp Then
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KPUT");
+			KAppend("NOCOMPILE=True");
+			KAppend("MSG=записано без компиляции; проверьте сборку после перезапуска формы");
+			Return;
+		End If;
+		// Компилируем сборку, которой принадлежит модуль. Если это сборка
+		// прошивки — компиляцию не делаем: это уронило бы процесс.
+		TargetAsm := KAssemblyOf(Target);
+		KAppend("TARGET_ASM=" + TargetAsm);
+		If TargetAsm = KP_ASSEMBLY Then
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KPUT");
+			KAppend("NOCOMPILE=True");
+			KAppend("MSG=цель в сборке прошивки — компиляция не выполняется");
+			Return;
+		End If;
+		If KCompileOk(TargetAsm) Then
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KPUT");
+			KAppend("CHECK_COMPILED=True");
+		Else
+			KAppend("CHECK_COMPILED=False");
+			KAppend("MSG=сборка не компилируется — ОТКАТ");
+			// 5. Откат
+			Try
+				M := Desc.Edit As IModule;
+				M.Text := OldText;
+				If M.Modified Then
+					(M As IMetabaseObject).Save;
+				End If;
+				KAppend("ROLLED_BACK=True");
+			Except On e: Exception Do
+				KAppend("ROLLED_BACK=False");
+				KAppend("MSG=ОТКАТ НЕ УДАЛСЯ (" + e.Message + "), восстановите вручную из " + BackupFile);
+			End Try;
+			If KCompileOk(TargetAsm) Then
+				KAppend("AFTER_ROLLBACK_COMPILED=True");
+				KAppend("STATUS=OK");
+				KAppend("WHAT=KPUT");
+			Else
+				KAppend("AFTER_ROLLBACK_COMPILED=False");
+				KAppend("STATUS=ERR");
+				KAppend("WHAT=KPUT");
+				KAppend("MSG=после отката сборка тоже не компилируется — смотрите бэкап");
+			End If;
+		End If;
+	End Sub KDoPut;
+
+	Sub KDoRollback(Target: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		Files: Array Of String;
+		Latest, Text, TargetAsm: String;
+		I: Integer;
+	Begin
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(Target);
+		If IsNull(Desc) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=модуль не найден: " + Target);
+			Return;
+		End If;
+		// Ищем самый свежий бэкап по имени (в имени — отметка времени)
+		Latest := "";
+		Try
+			Files := Directory.GetFiles(KP_BACKUP_DIR, Target + "_*.fore").ToArray;
+		Except On e: Exception Do
+			Files := Null;
+		End Try;
+		If IsNull(Files) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=папка бэкапов недоступна: " + KP_BACKUP_DIR);
+			Return;
+		End If;
+		For I := 0 To Files.Length - 1 Do
+			If Files[I] > Latest Then
+				Latest := Files[I];
+			End If;
+		End For;
+		If Latest = "" Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=бэкапов для " + Target + " нет");
+			Return;
+		End If;
+		Text := KReadFile(Latest);
+		If Text = "" Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=бэкап пуст или не читается: " + Latest);
+			Return;
+		End If;
+		Try
+			M := Desc.Edit As IModule;
+			M.Text := Text;
+			If M.Modified Then
+				(M As IMetabaseObject).Save;
+			End If;
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KROLLBACK");
+			KAppend("RESTORED_FROM=" + Latest);
+			KAppend("CHARS=" + Text.Length.ToString);
+			TargetAsm := KAssemblyOf(Target);
+			If TargetAsm = KP_ASSEMBLY Then
+				KAppend("NOCOMPILE=True");
+			Elseif KCompileOk(TargetAsm) Then
+				KAppend("CHECK_COMPILED=True");
+			Else
+				KAppend("CHECK_COMPILED=False");
+			End If;
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("MSG=откат не удался: " + e.Message);
+		End Try;
+	End Sub KDoRollback;
+
+	// Состояние сборки. ASM — какую сборку проверять (по умолчанию сборку канала).
+	Sub KDoHealth(AsmId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+	Begin
+		If AsmId = "" Then
+			AsmId := KP_ASSEMBLY;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(AsmId);
+		If IsNull(Desc) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=сборка не найдена: " + AsmId);
+			Return;
+		End If;
+		KAppend("STATUS=OK");
+		KAppend("WHAT=KHEALTH");
+		KAppend("ASSEMBLY=" + AsmId);
+		KAppend("CHILDREN=" + Desc.Children.Count.ToString);
+		// Прошивка компилирует только ЧУЖИЕ сборки: свою компилировать нельзя —
+		// она загружена в этот процесс (см. AGENTKEEPER разбор в шапке).
+		If AsmId = KP_ASSEMBLY Then
+			KAppend("NOCOMPILE=True");
+			KAppend("MSG=это сборка прошивки — компиляция не выполняется");
+		Elseif KCompileOk(AsmId) Then
+			KAppend("CHECK_COMPILED=True");
+		Else
+			KAppend("CHECK_COMPILED=False");
+			KAppend("MSG=в сборке есть ошибки компиляции");
+		End If;
+	End Sub KDoHealth;
+
+	// Компиляция сборки с подробностями. Сборку прошивки не компилируем:
+	// она загружена в этот процесс, и это роняет его.
+	Sub KDoCompileAsm(AsmId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		Svc: IForeServices;
+		Rt: IForeRuntime;
+		A: IForeAssembly;
+		Bin: IForeAssemblyBinary;
+	Begin
+		If AsmId = "" Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=не указан ASM");
+			Return;
+		End If;
+		If AsmId = KP_ASSEMBLY Then
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KCOMPILE");
+			KAppend("ASM=" + AsmId);
+			KAppend("NOCOMPILE=True");
+			KAppend("MSG=это сборка прошивки — компиляция не выполняется");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(AsmId);
+		If IsNull(Desc) Then
+			KAppend("STATUS=ERR");
+			KAppend("MSG=сборка не найдена: " + AsmId);
+			Return;
+		End If;
+		Svc := MB As IForeServices;
+		Rt := Svc.GetRuntime;
+		KAppend("ASM=" + AsmId);
+		KAppend("CHILDREN=" + Desc.Children.Count.ToString);
+		Try
+			A := Rt.BindToAssembly(AsmId);
+			KAppend("BIND=OK");
+			KAppend("CLASSES=" + A.ClassesCount.ToString);
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("WHAT=KCOMPILE");
+			KAppend("MSG=BindToAssembly: " + e.Message);
+			Return;
+		End Try;
+		Try
+			Bin := Rt.ResolveAssembly(AsmId);
+			KAppend("STATUS=OK");
+			KAppend("WHAT=KCOMPILE");
+			KAppend("CHECK_COMPILED=" + Bin.CheckCompiled.ToString);
+			KAppend("IS_LOADED=" + Bin.IsLoaded.ToString);
+			KAppend("TIME_STAMP=" + Bin.TimeStamp.ToString);
+		Except On e: Exception Do
+			KAppend("STATUS=ERR");
+			KAppend("WHAT=KCOMPILE");
+			KAppend("MSG=ResolveAssembly: " + e.Message);
+		End Try;
+	End Sub KDoCompileAsm;
+
+	// ========================================================================
+	//  ВСПОМОГАТЕЛЬНОЕ
+	// ========================================================================
+	// Компиляция указанной сборки. Сборка задаётся явно, а не константой:
+	// прошивка обязана компилировать ТОЛЬКО чужие сборки. Компиляция сборки,
+	// загруженной в этот же процесс, падает (Access violation в KeSom.dll).
+	Function KCompileOk(AsmId: String): Boolean;
+	Var
+		MB: IMetabase;
+		Svc: IForeServices;
+		Rt: IForeRuntime;
+		A: IForeAssembly;
+		Bin: IForeAssemblyBinary;
+	Begin
+		If AsmId = "" Then
+			Return False;
+		End If;
+		Try
+			MB := MetabaseClass.Active;
+			Svc := MB As IForeServices;
+			Rt := Svc.GetRuntime;
+			A := Rt.BindToAssembly(AsmId);
+			Bin := Rt.ResolveAssembly(AsmId);
+			Return Bin.CheckCompiled;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: компиляция " + AsmId + " — " + e.Message);
+			Return False;
+		End Try;
+	End Function KCompileOk;
+
+	// Сборка, к которой принадлежит модуль (справка: IModule.Assembly).
+	// ВНИМАНИЕ: у IAssembly НЕТ свойства Id (только Modified, Permanent,
+	// References), поэтому идентификатор берём через описание объекта:
+	// (A As IMetabaseObjectDescriptor).Id
+	Function KAssemblyOf(ModuleId: String): String;
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		M: IModule;
+		A: IAssembly;
+		ADesc: IMetabaseObjectDescriptor;
+	Begin
+		Try
+			MB := MetabaseClass.Active;
+			Desc := MB.ItemById(ModuleId);
+			If IsNull(Desc) Then
+				Return "";
+			End If;
+			M := Desc.Bind As IModule;
+			A := M.Assembly;
+			If IsNull(A) Then
+				Return "";
+			End If;
+			ADesc := A As IMetabaseObjectDescriptor;
+			If IsNull(ADesc) Then
+				Return "";
+			End If;
+			Return ADesc.Id;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: сборка модуля не определена — " + e.Message);
+			Return "";
+		End Try;
+	End Function KAssemblyOf;
+
+	Function KReadFile(FullPath: String): String;
+	Var
+		Reader: ITextReader;
+		Text: String;
+	Begin
+		Text := "";
+		Try
+			Reader := File.OpenTextReader(FullPath);
+			Try
+				Reader.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Прошивка: кодировка чтения — " + e.Message);
+			End Try;
+			If Not Reader.Eof Then
+				Text := Reader.ReadToEnd;
+			End If;
+			Dispose Reader;
+			Reader := Null;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: файл не прочитан — " + e.Message);
+			Text := "";
+		End Try;
+		Return Text;
+	End Function KReadFile;
+
+	Sub KAppend(Line: String);
+	Begin
+		Reply_ := Reply_ + Line + KP_CRLF;
+	End Sub KAppend;
+
+	Sub EnsureKeeperDirs;
+	Begin
+		KEnsureDir(KP_IN_DIR);
+		KEnsureDir(KP_OUT_DIR);
+		KEnsureDir(KP_BACKUP_DIR);
+	End Sub EnsureKeeperDirs;
+
+	// CreateDirectory бросает исключение на существующей папке — проверяем
+	Sub KEnsureDir(Path: String);
+	Begin
+		Try
+			If Not Directory.Exists(Path) Then
+				Directory.CreateDirectory(Path);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Прошивка: папку не создать (" + Path + ") — " + e.Message);
+		End Try;
+	End Sub KEnsureDir;
+
+	Function KStamp: String;
+	Var
+		D: DateTime;
+		P2: String;
+	Begin
+		D := DateTime.Now;
+		P2 := D.Minute.ToString;
+		If D.Minute < 10 Then
+			P2 := "0" + P2;
+		End If;
+		Return D.Year.ToString + "-" + D.Month.ToString + "-" + D.Day.ToString +
+			"_" + D.Hour.ToString + P2 + D.Second.ToString;
+	End Function KStamp;
+
+	Function KParam(Text, Key: String): String;
+	Var
+		Lines: Array Of String;
+		Line: String;
+		I: Integer;
+	Begin
+		Lines := Text.Split(Char.Chr(10));
+		For I := 0 To Lines.Length - 1 Do
+			Line := String.Trim(Lines[I]);
+			If Line.IndexOf(Key + "=") = 0 Then
+				Return String.Trim(Line.SubString(Key.Length + 1, Line.Length - Key.Length - 1));
+			End If;
+		End For;
+		Return "";
+	End Function KParam;
+
+	Function KPayload(Text: String): String;
+	Var
+		Lines: Array Of String;
+		I, Pos: Integer;
+		Acc: String;
+	Begin
+		Lines := Text.Split(Char.Chr(10));
+		Pos := -1;
+		For I := 0 To Lines.Length - 1 Do
+			If String.Trim(Lines[I]) = "TEXT" Then
+				Pos := I;
+				Break;
+			End If;
+		End For;
+		If Pos < 0 Then
+			Return "";
+		End If;
+		Acc := "";
+		For I := Pos + 1 To Lines.Length - 1 Do
+			If I > Pos + 1 Then
+				Acc := Acc + KP_CRLF;
+			End If;
+			Acc := Acc + Lines[I];
+		End For;
+		Return Acc;
+	End Function KPayload;
+
+End Class AGENTKEEPERForm;

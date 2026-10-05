@@ -1,0 +1,1168 @@
+Collections	IArrayList	interface	
+Collections	IBitArray	interface	
+Collections	ICollection		
+Collections	IDictionary		
+Collections	IEnumerable	interface	
+Collections	IHashtable	interface	
+Collections	IList	interface	
+Collections	IQueue	interface	
+Collections	ISortedList	interface	
+Collections	IStack	interface	
+Collections	IStringList	interface	
+Collections	IStringMap	interface	
+Dal	IDalCommand	interface	
+Dal	IDalCursor	interface	
+Db	IDatabaseInstance	interface	
+Db	IDatasetInstance	interface	
+ExtCtrls	IDataGrid	interface	DataSource
+ExtCtrls	IDataGridColumn	interface	
+ExtCtrls	IMetabaseDialog	interface	
+ExtCtrls	IMetabaseDialogFilters	interface	
+ExtCtrls	IMetabaseDialogMetaclassFilter	interface	
+ExtCtrls	IMetabaseListView	interface	
+ExtCtrls	IMetabaseListViewItem	interface	
+ExtCtrls	IMetabaseOpenDialog	interface	
+ExtCtrls	IMetabaseTreeList	interface	
+ExtCtrls	IUiDataSet	interface	
+ExtCtrls	IUiDataSource	interface	Dataset
+ExtCtrls	IUiMemoryTable	interface	
+ExtCtrls	IUiMetabaseDataset	interface	
+ExtCtrls	IUiQuery	interface	
+ExtCtrls	IUiRdsDictionary	interface	
+ExtCtrls	IUiTable	interface	
+Fore	AccessSpecificatorKind	enum	
+Fore	AppServerClass	class	
+Fore	AppServerState	enum	
+Fore	Array	class	
+Fore	Boolean	class	
+Fore	CalendarMonth	enum	
+Fore	CalendarWeekOfMonth	enum	
+Fore	Char	class	
+Fore	Currency	class	
+Fore	DateTime	class	
+Fore	Debug	class	
+Fore	Decimal	class	
+Fore	Double	class	
+Fore	EtlTemplateType	enum	
+Fore	Exception	class	
+Fore	ForeClassType	enum	
+Fore	ForeCriticalSection	class	
+Fore	ForeMethod	class	
+Fore	ForeMethodType	enum	
+Fore	ForeResultType	enum	
+Fore	ForeSerializer	class	
+Fore	ForeSubType	enum	
+Fore	ForeThread	class	Create(Create(Method:  IForeMethod );)
+Fore	ForeThreadState	enum	
+Fore	Guid	class	
+Fore	IAppServerClass	interface	IsRunning(IsRunning(Instance: String): Boolean;);Refresh(Refresh(Instance: String):  AppServerState ;);Run(Run(Instance: String; Arguments: String);)
+Fore	IBaseMethod	interface	Assembly;Bind;Category;Description;Invoke(Invoke([Value: Variant = Null]););Key;Method;Name;ResultType;Tag
+Fore	ICultureInfo	interface	
+Fore	IDefaultBehaviour	interface	IsSelectionColorDefault;RDSElementCard;ResetSelectionColors;SelectionBorderColor;SelectionColor;TreatEmptySelectionAsFull
+Fore	IDocument	interface	CreationDate;FileName;MimeType;ModificDate;Size
+Fore	IDocumentBase	interface	GetAsStream;LoadFromFile(LoadFromFile(FileName: String););LoadFromStream(LoadFromStream(Stream:  IIOStream ););SaveToFile(SaveToFile(FileName: String););SaveToStream(SaveToStream(Stream:  IIOStream );)
+Fore	IEtlTemplate	interface	Class;Module;Type
+Fore	IEtlTemplates	interface	Add;Clear;Count;FindById(FindById(Id: String):  IEtlTemplate ;);FindByKey(RemoveByKey(Key: Integer):  IEtlTemplate ;);Item(Item(Index: Integer):  IEtlTemplate ;);Remove(Remove(Index: Integer): Boolean;);RemoveById(RemoveById(Id: String): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Fore	IExecuteSubScheduledTask	interface	Assembly;SubName
+Fore	IExternReferenceLogger	interface	Collapse;Enable;ObjectIndexing;SaveToFile(SaveToFile(FileName: String);)
+Fore	IForeAssembly	interface	BindToClass(BindToClass(ClassName: String):  IForeClass ;);BindToSub(BindToSub(SubName: String):  IForeSub ;);ClassItem(ClassItem(ClassIndex: Integer):  IForeClass ;);ClassesCount;SubItem(SubItem(SubIndex: Integer):  IForeSub ;);SubsCount
+Fore	IForeAssemblyBinary	interface	Builtin;CheckCompiled;GetMetadata;GetReferenceTimeStamp(GetReferenceTimeStamp(Reference: String):);HiddenReferences;IsLoaded;Name;Namespace_;ObjectName;References;TimeStamp;Version
+Fore	IForeClass	interface	BindToMethod(BindToMethod(MethodName: String):  IForeSub ;);BindToProperty(BindToProperty(PropertyName: String):  IForeProperty ;);ClassAccessSpecificatorKind;ClassType;CreateObject;IsHaveClassOrInterface(IsHaveClassOrInterface(Name: String): Boolean;);Name;ParentName;PropertiesCount;PropertyItem(PropertyItem(Index: Integer):  IForeProperty ;);SubItem(SubItem(Index: Integer):  IForeSub ;);SubsCount;XMLDocumentation
+Fore	IForeCriticalSection	interface	Enter;Leave
+Fore	IForeMethod	interface	Params;Type
+Fore	IForeMethodParam	interface	DefaultValue;Description;Param;Tag;Type
+Fore	IForeMethodParams	interface	Count;FindByParam(FindByParam(Param: String):  IForeMethodParam ;);Item(Item(Index: Integer):  IForeMethodParam ;)
+Fore	IForeMethods	interface	Add;Clear;Count;FindByKey(FindByKey(Key: Integer):  IForeMethod ;);Item(Item(Index: Integer):  IForeMethod ;);Remove(Remove(Index: Integer););RemoveByKey(RemoveByKey(Key: Integer);)
+Fore	IForeObject	interface	BindToField(BindToField(FieldName: String):  IForeVar ;);ClassName;Debug;FieldItem(FieldItem(Index: Integer):  IForeVar ;);FieldsCount;ModuleName;Object;SetFieldValue(SetFieldValue(FieldName: String; Value: Variant;)
+Fore	IForeObjectsGraph	interface	ObjectIndexing;SaveToFile(SaveToFile(FileName: String);)
+Fore	IForeProperty	interface	IsDefault;IsStatic;Name;NameOfGetMethod;NameOfSetMethod;XMLDocumentation
+Fore	IForeRuntime	interface	BindToAssembly(BindToAssembly(AssamblyName: String):  IForeAssembly ;);BindToObject(BindToObject(RealObject: Object):  IForeObject ;);ExternReferenceLogger;ForeObjectsGraph;ResolveAssembly(ResolveAssembly(AssemblyName: String):  IForeAssemblyBinary ;)
+Fore	IForeSerializer	interface	CreateLoaderFromFile(CreateLoaderFromFile(FileName: String; Metabase:  IMetabase ):  IForeSerializerLoader ;);SaveAssemblyToFile(SaveAssemblyToFile(Assembly:  IAssembly ; FileName: String););SaveFormToFile(SaveFormToFile(Form:  IForm ; FileName: String););SaveModuleToFile(SaveModuleToFile(Module:  IModule ; FileName: String);)
+Fore	IForeSerializerLoader	interface	CreateInfo;LoadAssembly;LoadForm;LoadModule;Metabase
+Fore	IForeServices	interface	GetRuntime
+Fore	IForeSub	interface	Invoke;IsConstructor;IsResult;IsStatic;ModuleName;Name;OrderNumber;Params;ResultName;ResultType;ResultValue;Self;SubAccessSpecificatorKind;SubType;XMLDocumentation
+Fore	IForeSubParam	interface	IsVar;Name;ParamType;TypeName;Value
+Fore	IForeSubParams	interface	Count;Item(Item(Index: Integer):  IForeSubParam ;);ParamByName(ParamByName(Name: String):  IForeSubParam ;)
+Fore	IForeThread	interface	Abort;Join;Name;Sleep(Sleep(timeout: Integer););Start(Start([Param: Variant = Null]););State
+Fore	IForeVar	interface	Value
+Fore	IRepositoryScriptCallback	interface	BeginStatement(BeginStatement(Statement: String););EndStatement(EndStatement(bError: Boolean; Message: String;);OnFinish;OnStart(OnStart(Error:  RepsitoryScriptInitError ;)
+Fore	IRepositoryScriptManager	interface	Connection;Driver;Execute(Execute(Callback:  IRepositoryScriptCallback ););FetchVersion;LoadScript(LoadScript(Stream:  IIOStream ););Operation;Repository;Unicode;VersionMajor;VersionMinor;VersionUnicode
+Fore	IResourceExporter	interface	Consumer;Export;Locales;Resource;Strings
+Fore	IResourceImporter	interface	Import;Locales;Log;Method;Provider;Resource
+Fore	IResourceImporterLog	interface	Count;Item(Item(Index: Integer): String;);State(State(Index: Integer):  ResourceImportLogState ;)
+Fore	IScheduledEvent	interface	Bind(Bind(Mb:  IMetabase ):  IScheduledTask ;);IsLast;Period;StartDateTime;TaskId;TaskKey
+Fore	IScheduledEvents	interface	Count;Item(Item(Index: Integer):  IScheduledEvent ;);Pop;Push(Push(Value:  IScheduledEvents );)
+Fore	IScheduledInvoke	interface	Invoke(Invoke(Mb:  IMetabase ););Next;Value
+Fore	IScheduledTask	interface	CreateChecker(CreateChecker(Type:  ScheduledTaskCheckerType ):);CreateInvokeEvent(CreateInvokeEvent();ExecuteImmediate(ExecuteImmediate(SaveResult: Boolean):  IScheduledTaskResult ;);GetResults;Properties;ResetResults;State;TaskChecker
+Fore	IScheduledTaskAlert	interface	CheckAlert;Invoke;Next;StartLook;StopLook;Type
+Fore	IScheduledTaskAlerts	interface	Add(Add(Type:  ScheduledTaskAlertType ):);Clear;Count;FindById(FindById(Id: String):  IScheduledTaskAlert ;);FindByKey(FindByKey(Key: Integer):  IScheduledTaskAlert ;);Item(Item(Index: Integer):  IScheduledTaskAlert ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Fore	IScheduledTaskAuditAlert	interface	ClassId;ObjectId;ObjectKey;Operation;Result;Station;UserName;UserNameOS
+Fore	IScheduledTaskChecker	interface	Check;CheckMsg;Type
+Fore	IScheduledTaskCustomAlert	interface	EventId
+Fore	IScheduledTaskModuleChecker	interface	ExpectedResult;Macro;Module
+Fore	IScheduledTaskPeriod	interface	Assign(Assign(Value:  IScheduledTaskPeriod ););Next(Next(Current: DateTime): DateTime;);StopDateTime;Type
+Fore	IScheduledTaskPeriodDaily	interface	EveryDays;StartDateTime
+Fore	IScheduledTaskPeriodMonthly	interface	Day;DayOfWeek;Months(Months(Index:  CalendarMonth ):);StartTime;WeekOfMonth
+Fore	IScheduledTaskPeriodOneTimeOnly	interface	StartDateTime;StartMode
+Fore	IScheduledTaskPeriodTimely	interface	StartDateTime;TimeInterval
+Fore	IScheduledTaskPeriodWeekly	interface	DaysOfWeek(DaysOfWeek(Index: CalendarDayOfWeek):);EveryWeeks;StartTime
+Fore	IScheduledTaskProperties	interface	Active;Alerts;AppendAttachment;Class_;CreatePeriod(CreatePeriod(Type:  ScheduledTaskPeriodType ):);DynamicMailListMacro;DynamicMailListModule;EventId;FtpAddress;LoadParamValues(LoadParamValues(Values: IMetabaseObjectParamValues):);MailBody;MailRecipients;MailSubject;MailTargetType;ParamValues;Period;Queueing;SendMail;UseDynamicMailList;UserTag
+Fore	IScheduledTaskResult	interface	FileExtension;FinishDateTime;Finished;HasDataStream;Key;Messages;NotificationSended;ReadDataStream(ReadDataStream([Value:  IIOStreamSys);StartDateTime;Succeeded
+Fore	IScheduledTaskResults	interface	Count;FindByKey(FindByKey(Key: Integer):  IScheduledTaskResult ;);FindCurrent(FindCurrent(Current: DateTime):  IScheduledTaskResult ;);Item(Item(Index: Integer):  IScheduledTaskResult ;)
+Fore	IScheduledTaskValidationChecker	interface	Condition;ExceptionCount;Validation
+Fore	IScheduledTasksContainer	interface	Tasks
+Fore	ISharedAdhocPlugin	interface	IconIndex;MasterForm;ViewForm;WebUrl
+Fore	ISharedAdhocPlugins	interface	Add;Clear;Count;FindById(FindById(Id: String):  ISharedAdhocPlugin ;);FindByKey(FindById(Key: Integer):  ISharedAdhocPlugin ;);Item(Item(index: Integer):  ISharedAdhocPlugin ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(Remove(Key: Integer): Boolean;)
+Fore	ISharedEventHandler	interface	Enabled;EventsClass;Object
+Fore	ISharedEventHandlers	interface	Enabled;EventHandler(EventHandler(Type:  SharedEventHandlerType ):)
+Fore	ISharedParams	interface	ApplyParamValues;DefaultBehaviour;EtlTemplates(EtlTemplates(Type:  EtlTemplateType ):);EventHandlers;IsShared;Methods;NameResource;ParamValues;Params;Resource;SearchEngine
+Fore	ISharedPlugins	interface	AdhocPlugins;LargeImages;Resource;SmallImages
+Fore	ISharedPluginsContainer	interface	Plugins
+Fore	ISheduledAuditEvent	interface	ClassId;Invoke;ObjectId;ObjectKey;Operation;Result;Station;UserName;UserNameOS
+Fore	IUiMetabaseObject	interface	Active;ClearDefault;Instance;Object;ObjectClassId;OperationMode
+Fore	IUiMetabaseObjectParams	interface	CollectValues(CollectValues(bSet: Boolean; Values: IMetabaseObjectParamValues):);IsDefault;ParamControl(ParamControl(ParamId: String): IControl;);RemoveParamControl(RemoveParamControl(Value:  IControl ););ResetParamControls;UiObject
+Fore	Int64	class	
+Fore	Integer	class	
+Fore	Object	class	
+Fore	RepositoryDriverType	enum	
+Fore	RepositoryOperationType	enum	
+Fore	RepositoryScriptCallback	class	
+Fore	RepositoryScriptManager	class	
+Fore	RepositoryType	enum	
+Fore	RepsitoryScriptInitError	enum	
+Fore	ResourceExporter	class	
+Fore	ResourceImportLogState	enum	
+Fore	ResourceImportType	enum	
+Fore	ResourceImporter	class	
+Fore	STValidationCheckerConditionType	enum	
+Fore	ScheduledAlertAuditResult	enum	
+Fore	ScheduledTaskAlertType	enum	
+Fore	ScheduledTaskCheckerType	enum	
+Fore	ScheduledTaskMailTarget	enum	
+Fore	ScheduledTaskPeriodType	enum	
+Fore	ScheduledTaskState	enum	
+Fore	SharedEventHandlerType	enum	
+Fore	SheduledAuditEvent	class	Create(Create(Operation: Integer);)
+Fore	String	class	
+Fore	TaskPeriodOneTimeStartMode	enum	
+Fore	TimeSpan	class	
+Fore	UiMetabaseObject	class	
+Fore	UiMetabaseObjectOperationMode	enum	
+Fore	UiMetabaseObjectParams	class	
+Fore	Variant	class	
+Forms	DateTimePicker	class	
+Forms	Form	class	CreateForm(CreateForm([Parent:  IWin32Window)
+Forms	IButton	interface	
+Forms	ICheckBox	interface	
+Forms	IColorDialog	interface	
+Forms	IComboBox	interface	
+Forms	ICommonCalendar	interface	
+Forms	IControl	interface	
+Forms	ICustomEdit	interface	
+Forms	IDateTimePicker	interface	
+Forms	IEditBox	interface	
+Forms	IFileDialog	interface	
+Forms	IFileOpenDialog	interface	
+Forms	IFileSaveDialog	interface	
+Forms	IFontDialog	interface	
+Forms	IGroupBox	interface	
+Forms	IImageBox	interface	
+Forms	IImageList	interface	
+Forms	ILabel	interface	
+Forms	IListBox	interface	
+Forms	IListView	interface	
+Forms	IListViewColumn	interface	
+Forms	IListViewItem	interface	
+Forms	IListViewItems	interface	
+Forms	IMainMenu	interface	
+Forms	IMemo	interface	
+Forms	IMenuItem	interface	
+Forms	IMonthCalendar	interface	
+Forms	IPageControl	interface	
+Forms	IPanel	interface	
+Forms	IPopupMenu	interface	
+Forms	IProgressBar	interface	
+Forms	IRadioButton	interface	
+Forms	IScrollBox	interface	
+Forms	ISplitter	interface	
+Forms	IStatusBar	interface	
+Forms	ITabAutoFilter	interface	Enabled;Load;Range;Save
+Forms	ITabAutoFilterBaseEventArgs	interface	Action
+Forms	ITabAutoFilterEventArgs	interface	Action
+Forms	ITabBeforeExpanderChangedEventArgs	interface	Cancel
+Forms	ITabBeforeObjectAngleChangeEventArgs	interface	Cancel;NewValue
+Forms	ITabBeforeObjectRectChangeEventArgs	interface	Cancel;NewValue
+Forms	ITabCellAfterEditBaseEventArgs	interface	Changed
+Forms	ITabCellAfterEditEventArgs	interface	Changed
+Forms	ITabCellBaseEventArgs	interface	Column;Row
+Forms	ITabCellBeforeChangeBaseEventArgs	interface	Value
+Forms	ITabCellBeforeChangeEventArgs	interface	Value
+Forms	ITabCellBeforeEditBaseEventArgs	interface	Cancel
+Forms	ITabCellBeforeEditEventArgs	interface	Cancel
+Forms	ITabCellChangeBaseEventArgs	interface	Value
+Forms	ITabCellChangeEventArgs	interface	Value
+Forms	ITabCellContentChangeBaseEventArgs	interface	Cancel;Type;Value
+Forms	ITabCellContentChangeEventArgs	interface	Cancel;Type;Value
+Forms	ITabCellEventArgs	interface	Column;Row
+Forms	ITabCellFormatDlg	interface	ActivePage;DisableItem(DisableItem(Value:  TabFormatDlgItems ););EnableItem(EnableItem(Value:  TabFormatDlgItems ););ExcludePage(ExcludePage(Value:  TabFormatDlgPages ););IncludePage(IncludePage(Value:  TabFormatDlgPages ););ShowDialog(ShowDialog(ParentWnd:  IWin32Window ):);Style
+Forms	ITabCellIterator	interface	CurrentCell;CurrentColumn;CurrentRow;First;Next;Order;Range
+Forms	ITabCellSearch	interface	CaseSensitive;Direction;Range;RequiredStyle;ResetRequiredStyle;Target;Text;WholeWordsOnly
+Forms	ITabCellStyle	interface	AccessRights;ActivationEditorMode;AdjustFormatPrecision(AdjustFormatPrecision(Delta: Integer););ApplyStyle(ApplyStyle(Value:  ITabCellStyle ););Assign(Assign(Value:  ITabCellStyle ););BackgroundBrush;BackgroundPicture;BackgroundPictureWrapMode;Binding;BorderColor(BorderColor(Index:  TabBorder ):);BorderStyle(BorderStyle(Index:  TabBorder ):);BorderWeight(BorderWeight(Index:  TabBorder ):);Cursor;CustomFormat;DisplayEmptyAs;DisplayZeroAs;EnablePictureEvents;EnablePictures;Equal(Equal(Value:  ITabCellStyle ): Boolean;);FitHorizontal;FitVertical;Font;FormatType;FormulaHidden;Hint;HorizontalAlignment;HoverPicture;Hyperlink;LoadFromXml(LoadFromXml(Xml: String););LocalCustomFormat;Locked;Margins(Margins(Index:  TabMargin ):);NormalDetachedPicture;NormalPicture;PictureAboveSelection;PictureCursor;PictureHorizontalAlignment;PictureTooltip;PictureVerticalAlignment;Printable;PushedPicture;SaveToXml;Text;TextOverPictureHorizontal;TextOverPictureVertical;Unselectable;UserDecimalSeparator;UserThousandSeparator;VerticalAlignment;WrapText
+Forms	ITabColumnBaseEventArgs	interface	Column
+Forms	ITabColumnEventArgs	interface	Column
+Forms	ITabColumnResizeEventArgs	interface	Type
+Forms	ITabColumnResizingEventArgs	interface	Cancel
+Forms	ITabColumnSearch	interface	AddCondition(AddCondition(Row: Integer; Text: String; CaseSensitive:)
+Forms	ITabContextButton	interface	Visible
+Forms	ITabCustomSort	interface	Add(Add(Index: Integer):  ITabCustomSortItem ;);CaseSensitive;Clear;Count;IsColumnSort;Item(Item(Index: Integer):  ITabCustomSortItem ;);Range;RemoveAt(RemoveAt(Index: Integer): Boolean;);Sort
+Forms	ITabCustomSortItem	interface	Direction;Index;Type
+Forms	ITabEditor	interface	Column;Row;Sheet;Text;XamlText
+Forms	ITabEditorEventArgs	interface	Editor
+Forms	ITabErrorCheckingOptions	interface	Assign(Assign(Result:  ITabErrorCheckingOptions ););EmptyValuesTreatmentType;EnableChecking;ErrorIndicatorsColor;NumberAsText;ResetSkippedErrors
+Forms	ITabExpanderChangedEventArgs	interface	State
+Forms	ITabFont	interface	Angle;Apply(Apply(Value:  ITabFont ););AsGxFont;Assign(Assign(Value:  ITabFont ););Bold;Charset;Color;Equal(Equal(Value:  ITabFont ):);FromGxFont(FromGxFont(Value:  IGxFont ););Italic;Name;Size;Strikeout;Underline
+Forms	ITabFootnote	interface	Column;CustomMark;CustomMarkFontName;FormattedText;Number;NumberText;Row;Text
+Forms	ITabFootnoteCollection	interface	Add(Add(Row: Integer; Column: Integer):  ITabFootnote ;);Clear;Count;IndexOf(IndexOf(Value:  ITabFootnote ):);Item(Item(Index: Integer):  ITabFootnote ;);Remove(Remove(Value:  ITabFootnote ):);RemoveAt(RemoveAt(Index: Integer): Boolean;)
+Forms	ITabFootnotes	interface	BackgroundBrush;BeginUpdate;CustomMark;CustomMarkFontName;EndUpdate;Font;InUpdate;Location;NumberStyle;NumberingRule;StartingNumber;UniqueNumbers
+Forms	ITabFootnotesBox	interface	Source
+Forms	ITabFootnotesPanelOptions	interface	PercentHeight;PercentWidth;Position
+Forms	ITabFormatAverage	interface	Style;Type
+Forms	ITabFormatCellContent	interface	CellValue;ContentType;DateCondition;MaxValue;MinValue;SpecificText;Style;TextCondition;ValueCondition
+Forms	ITabFormatCondition	interface	AppliedRange;AssignPredefinedDataBar(AssignPredefinedDataBar(Style:  TabConditionPredefinedDataBarStyle ););AssignPredefinedGradient(AssignPredefinedGradient(Style:  TabConditionPredefinedGradientStyle ););AssignPredefinedGrowth(AssignPredefinedGrowth(IconType:  TabConditionIconType ; [Direction:  TabFormatGrowthDirection  = 0]););AssignPredefinedIcons(AssignPredefinedIcons(Style:  TabConditionIconType ););AssignPredefinedScale(AssignPredefinedScale(ScaleType:  TabConditionPredefinedScaleStyle ););DataAdapter;Details;Enabled;Key;Range;Type
+Forms	ITabFormatConditions	interface	Add;AddCollection(AddCollection(Value:  ITabFormatConditions ;);Clear;Count;FindByKey(FindByKey(Key: Integer):  ITabFormatCondition ;);Item(Item(Index: Integer):  ITabFormatCondition ;);Move(Move(IndexFrom: Integer; IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);RemoveCollection(RemoveCollection(Value:  ITabFormatConditions );)
+Forms	ITabFormatDataAdapter	interface	Data(Data(Row: Integer; Column: Integer): Variant;)
+Forms	ITabFormatDuplicate	interface	Style;Type
+Forms	ITabFormatFormula	interface	Condition;Style
+Forms	ITabFormatGrowth	interface	Direction;IconType
+Forms	ITabFormatNumericScale	interface	GetMaxValue;GetMinValue;TargetType
+Forms	ITabFormatRankValues	interface	Count;Percent;PercentUsed;Style;Type
+Forms	ITabFormatScale	interface	GetAutoColor(GetAutoColor(nIndex: Integer):  IGxColor ;);GetIntervalValueBound(GetIntervalValueBound(nIndex:);GetUsedIntervalIndex(GetUsedIntervalIndex(nIndex:);GetUsedIntervalsCount;Recalc;TargetType
+Forms	ITabFormatValues	interface	IconCount;IconType;MaxValue;MaxValueColor;MaxValueType;MidValue;MidValueColor;MidValueType;MinValue;MinValueColor;MinValueType;PointCondition(PointCondition(Index: Integer):  TabConditionIconRangeCond ;);PointType(PointType(Index: Integer):  TabFormatValueType ;);PointValue(PointValue(Index: Integer): Variant;);ReverseIcons;ShowValues;Style
+Forms	ITabFormulaCollection	interface	Count;IndexOf(IndexOf(Item:  ITabFormulaItem ):);Item(Item(Index: Integer):  ITabFormulaItem ;)
+Forms	ITabFormulaItem	interface	Formula;Range
+Forms	ITabHyperlink	interface	Action;ActionType;Active;Apply(Apply(Value:  ITabHyperlink ););Assign(Assign(Value:  ITabHyperlink ););Color;Enable;Equal(Equal(Value:  ITabHyperlink ): Boolean;);SeparateLinkText;Target;Text;Underline;UseGlobalSettings
+Forms	ITabHyperlinkClickBaseEventArgs	interface	Type
+Forms	ITabHyperlinkClickEventArgs	interface	Type
+Forms	ITabIconExporter	interface	IconIndex;PixelHeight;PixelWidth;TabSheet
+Forms	ITabImages	interface	Add(Add(Image:  IGxImage ):);AddFromImageList(AddFromImageList(ImageList:  IImageList ););Count;Item(Item(Index: Integer):  IGxImage ;);Remove(Remove(Index: Integer; [CorrectCellPictureIndexes:);RemoveAll(RemoveAll([CorrectCellPictureIndexes: Boolean =)
+Forms	ITabInteractiveSelectionChangeEventArgs	interface	Cancel
+Forms	ITabInteractiveSelectionEventArgs	interface	Range;Type
+Forms	ITabNamedRegion	interface	Name
+Forms	ITabNamedRegions	interface	Add(Add(Name: String; Range:  ITabRange ):);Clear;Count;FindByName(FindByName(Name: String):  ITabNamedRegion ;);Item(Item(Index: Integer):  ITabNamedRegion ;);Remove(Remove(Name: String): Boolean;);RemoveAt(RemoveAt(Index: Integer): Boolean;)
+Forms	ITabNotNumberException	interface	
+Forms	ITabObject	interface	Activate;ActivationMode;Active;Angle;BringToFront;CenterAtView;ClassId;Copy;Cut;Deactivate;Deselect;Extension;Flip(Flip(Value:  TabObjectFlip ););Id;InteractiveRestrictions;Location;MoveBack;MoveForward;MovementMode;ParentGroup;Printable;PutAtRange(PutAtRange(Range:  ITabRange ););Rectangle;Select;Selected;SendToBack;Sheet;Size;Tag;Tooltip;Transparent;Visible
+Forms	ITabObjectBaseEventArgs	interface	Action;Object
+Forms	ITabObjectChangeEventArgs	interface	Object;Type
+Forms	ITabObjectEventArgs	interface	Action;Object
+Forms	ITabObjectExporter	interface	GetBitmap;Height;Object;Width
+Forms	ITabObjectGroup	interface	ChildItem(ChildItem(Index:Integer):  ITabObject ;);ChildItemsCount;Ungroup
+Forms	ITabObjectMovingEventArgs	interface	Cancel;Object;Rect
+Forms	ITabObjectResizingEventArgs	interface	Cancel;Object;Rect;Side
+Forms	ITabObjects	interface	Add(Add(ClassId: String; Placement:  IGxRectF ):);AdjustSelected(AdjustSelected(Adjustment:  TabObjectsAdjustment ););AlignSelected(AlignSelected(Alignment:  TabObjectsAlignment ););CenterSelectedAtView;Clear;Count;GetObjectIndex(GetObjectIndex(Id: String): Integer;);GroupSelected;Item(Item(Index: Integer):  ITabObject ;);Object(Object(Id: String):  ITabObject ;);Remove(Remove(Index: Integer););SelectedCount;SelectedObject(SelectedObject(Index: Integer):  ITabObject ;);UngroupSelected
+Forms	ITabOptions	interface	AutoPercentEntry;AutoUpdateCellsText;CopyFormulasOnRowColumnInsertion;IterativeCalculation;MaxChange;MaxIterations
+Forms	ITabPageBreaks	interface	Add(Add(ItemBreak: Integer););Assign(Assign(Value:  ITabPageBreaks ););Item(Item(Index: Integer): Integer;);Remove(Remove(Index: Integer););RemoveAll
+Forms	ITabPageContinuousRange		Remove(Remove(Index: Integer);)
+Forms	ITabPageContinuousRanges	interface	Add(Add(Position: Integer; Lenght: Integer): Boolean;);Assign(Assign(Value:  ITabPageContinuousRanges ););Count;ItemLenght(ItemLenght(Index: Integer): Integer;);ItemPosition(ItemPosition(Index: Integer): Integer;);RemoveAll
+Forms	ITabPageSettings	interface	BlackAndWhite;CenterHorizontal;CenterVertical;ColumnsBreaks;ContinuousColumns;ContinuousRows;PrintHyperlinks;PrintOrder;Range;RowsBreaks;Scale;TitleColumns;TitleColumnsScope;TitleRows;TitleRowsScope
+Forms	ITabPagesBreak		Count
+Forms	ITabPrintScale	interface	FitToPages;PageHeight;PageWidth;Value
+Forms	ITabProtection	interface	Activate(Activate(Password: String););Active;AllowDeletingColumns;AllowDeletingObjects;AllowDeletingRows;AllowEditingObjects;AllowFiltering;AllowFormattingCells;AllowFormattingColumns;AllowFormattingRows;AllowInsertingColumns;AllowInsertingObjects;AllowInsertingRows;AllowMovingObjects;Deactivate(Deactivate(Password: String););UserInterfaceOnly
+Forms	ITabProtectionFailedBaseEventArgs	interface	Message;Target
+Forms	ITabProtectionFailedEventArgs	interface	Message;Target
+Forms	ITabRange	interface	Address;AdjustHeight(AdjustHeight([MaxHeight: Double = -1;][MinHeight:);AdjustHeightEx(AdjustHeightEx([MaxHeight: Double = -1;][MinHeight:);AdjustWidth(AdjustWidth([MaxWidth: Double = -1;][MinWidth: Double);AppliedFormatConditions(AppliedFormatConditions([AllCells: Boolean);AutoFill(AutoFill(DestinationRange:  ITabRange ;);Bottom;Clear;ClearContent;ClearFormat;ClearPart(ClearPart(Part:  TabCleanPart ););Clone;ColumnPixelWidth;ColumnWidth;Combine(Combine(Range:  ITabRange ;);Copy;CopyToStream(CopyToStream(DestStream:  IIOStream ););Count;CreateIterator;Cut;Delete(Delete(Value:  TabDeleteShiftDirection ););DependenceCells(DependenceCells([DirectOnly: Boolean = True]): Array;);DependentCells(DependentCells([DirectOnly: Boolean = True]): Array;);DistinctCells(DistinctCells([WithHidden: Boolean = True]):  ITabRange ;);EntireColumns;EntireRows;Expand;ExtendToAdjacentCells;FillDown;FillLeft;FillRight;FillUp;Footnotes;FormatConditions;FormattedText;Formula;Height;Hidden;Insert(Insert(Value:  TabInsertShiftDirection ););IsCell;IsColumn;IsRow;IsRtfText;Item(Item(Index: Integer): Object;);Left;Location;Merge;Merged;Offset(Offset();ParseValue(ParseValue(Value: String););Part(Part(Index: Integer):  ITabRange ;);PartCount;Paste;PasteFromStream(PasteFromStream(SrcStream:  IIOStream ););PasteFromStreamEx(PasteFromStreamEx();PixelLocation;Prefix;RealColumnWidth;RealRowHeight;Recalc;Right;RowHeight;RowPixelHeight;SortColumns(SortColumns(RowIndex: Integer; Ascending: Boolean););SortRows(SortRows(ColumnIndex: Integer; Ascending: Boolean););Style;StyleForDraw(StyleForDraw([RealBorders: Boolean = False]):  ITabCellStyle ;);StyleIndex;Suffix;TabSheet;Text;ToArray;ToDouble2DArray(ToDouble2DArray(Var NonDoublesExist: Boolean): Array;);ToDoubleArray(ToDoubleArray([SkipNonDoubles: Boolean = false]):);ToDoubleArrayEx(ToDoubleArray([Flags:  TabRangeToArrayFlags);ToIntegerArray(ToIntegerArray([SkipNonIntegers: Boolean = false]):);Top;Type;Unmerge;Value;Width
+Forms	ITabRangeDeleteEventArgs	interface	Range;ShiftDirection
+Forms	ITabRangeInsertEventArgs	interface	Range;ShiftDirection
+Forms	ITabRegion	interface	Adjustable;BackgroundColor;BorderColor;BorderStyle;BorderWeight;Key;Range;Visible
+Forms	ITabRegions	interface	Add;Clear;Count;FindByKey(FindByKey(Key: Integer):  ITabRegion ;);IndexOf(IndexOf(Item:  ITabRegion ):);Item(Item(Index: Integer):  ITabRegion ;);Remove(Remove(Value:  ITabRegion ):);RemoveAt(RemoveAt(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Forms	ITabRequiredParametersException	interface	SetFuncName(SetFuncName(Value: String);)
+Forms	ITabRowBaseEventArgs	interface	Row
+Forms	ITabRowEventArgs	interface	Row
+Forms	ITabRowResizeEventArgs	interface	Type
+Forms	ITabRowResizingEventArgs	interface	Cancel
+Forms	ITabRowSearch	interface	AddCondition(AddCondition(Column: Integer; Text: String; CaseSensitive:)
+Forms	ITabScaleBaseEventArgs	interface	Scale
+Forms	ITabScaleEventArgs	interface	Scale
+Forms	ITabSearch	interface	Execute;TabSheet
+Forms	ITabSearchResult	interface	CurrentColumn;CurrentRow;Next;Range
+Forms	ITabSelection	interface	AddRange(AddRange(Range:  ITabRange ););CenterAtView;Copy;Cut;Empty;FocusedColumn;FocusedRow;Paste;Range;SelectAll;SelectColumns;SelectRows;Style
+Forms	ITabSheet	interface	AddStyle(AddStyle(Style:  ITabCellStyle ):);AdjustCellAddress(AdjustCellAddress(Address: String; SourceCell:  ITabRange ; DestinationCell:);AdjustFormula(AdjustFormula(Formula: String; SourceCell:  ITabRange ; DestinationCell:  ITabRange ): String;);AdjustRangeAddress(AdjustRangeAddress(Address: String, SourceCell:);BackgroundPicture;BeginUpdate(BeginUpdate([Flags:  TabUpdateFlags);Cell(Cell(Row: Integer; Column: Integer):  ITabRange ;);CellAddress(CellAddress(Row: Integer; Column: Integer): String;);CellComment(CellComment(Row: Integer; Column: Integer): String;);CellHint(CellHint(Row: Integer; Column: Integer): String;);CellPrefix(CellPrefix(Row: Integer, Column: Integer): Variant;);CellSuffix(CellSuffix(Row: Integer, Column: Integer): Variant;);CellValue(CellValue(Row: Integer; Column: Integer): Variant;);Cells(Cells();Clear;ClearPart(ClearPart([Part:  TabTableClearPart  = 7]););Column(Column(Column: Integer):  ITabRange ;);ColumnIndex(ColumnIndex(Column: String): Integer;);ColumnName(ColumnName(Column: Integer): String;);ColumnPixelWidth(ColumnPixelWidth(Index: Integer): Integer;);ColumnWidth(ColumnWidth(Index: Integer): Double;);Columns(Columns(Start: Integer; Finish: Integer):  ITabRange ;);ColumnsCount;Copy;CreateCellSearch;CreateColumnSearch;CreateExpander(CreateExpander(Row: Integer; Column: Integer; Length;);CreatePrinter;CreateRowSearch;CustomSort;Cut;DefaultHeight;DefaultWidth;DeleteColumns(DeleteColumns(Column: Integer; Count: Integer););DeleteRows(DeleteRows(Row: Integer; Count: Integer););EnableFormulas;EndUpdate;ErrorCheckingOptions;EventMask;ExpanderKind(ExpanderKind(Row: Integer; Column: Integer):  TabExpanderKind ;);ExpanderLength(ExpanderLength(Row: Integer; Column: Integer): Integer;);ExpanderOffPicture;ExpanderOnPicture;ExpanderState(ExpanderState(Row: Integer; Column: Integer):  TriState ;);Footnotes;FormatConditions;FormulaCollection;HyperlinkFont;Images;InsertColumns(InsertColumns(Column: Integer; Count: Integer););InsertRows(InsertRows(Row: Integer; Count: Integer););LoadStyleSheetFromXml(LoadStyleSheetFromXml(pStyleSheet:  IStyleSheet ,);MaxNotEmptyColumn(MaxNotEmptyColumn([WithObjects: Boolean = False]): Integer;);MaxNotEmptyRow(MaxNotEmptyRow([WithObjects: Boolean = False]): Integer;);MaxUsedColumn(MaxUsedColumn([WithObjects: Boolean = False]): Integer;);MaxUsedRow(MaxUsedRow([WithObjects: Boolean = False]): Integer;);Modified;Name;NamedRegions;Objects;Options;PackStyles;PageSettings;ParseCell(ParseCell(Address: String):  ITabRange ;);ParseCellEx(ParseCellEx(Address: String; Base:  ITabRange ):);ParseRange(ParseRange(Address: String):  ITabRange ;);ParseRangeEx(ParseRangeEx(Address: String, Base:  ITabRange ):);Paste;PasteEx(PasteEx();Recalc;Regions;Row(Row(Row: Integer):  ITabRange ;);RowHeight(RowHeight(Index: Integer): Double;);RowPixelHeight(RowPixelHeight(Index: Integer): Integer;);Rows(Rows(Start: Integer; Finish: Integer):  ITabRange ;);RowsCount;SaveStyleSheetToXml(SaveStyleSheetToXml(pStyleSheet:  IStyleSheet ):);SetDefaultHyperlinkFont;Sparklines;StyleSheet;Table;TableStyles;UndoRedo;View
+Forms	ITabSheetBaseEventArgs	interface	TabSheet
+Forms	ITabSheetBox	interface	BorderStyle;DisplayNumericColumnNames;Source
+Forms	ITabSheetEventArgs	interface	TabSheet
+Forms	ITabSheetExporter	interface	AutoHeight;BreakIntoLayouts;EmfType;ExportCellImages;ExportFootnotes;ExportFormulas;ExportHiddenCells;ExportObjectAsBitmap;ExportObjects;ExportPalette;Label;SheetAccess;TabSheet
+Forms	ITabSheetPrinter	interface	DifferentEvenPageGap;DifferentFirstPageGap;EvenFooterGap;EvenHeaderGap;FirstPageFooterGap;FirstPageGap;FirstPageHeaderGap;FooterGap;GetPageCount;HeaderGap;PagePrintableRect(PagePrintableRect(PageNumber: Integer):  IGxRect ;);PageSettings;PrintPage(PrintPage(PageNumber: Integer; Graphics:  IGxGraphics );)
+Forms	ITabSheetSource	interface	GetTabSheet
+Forms	ITabSparkline	interface	DataRange;Range
+Forms	ITabSparklines	interface	Add(Add(Range:  ITabRange ;);Clear;Count;Item(Item(Index: Integer):  ITabSparkline ;);Remove(Remove(Index: Integer): Boolean;)
+Forms	ITabTableStripe	interface	Style;Width
+Forms	ITabTableStyle	interface	AssignPredefined(AssignPredefined(Style:  TabTablePredefinedStyle ););ColumnFirstStripe;ColumnSecondStripe;Corner;Default_;FooterColumnStripe;FooterRowStripe;HeaderColumnStripe;HeaderRowStripe;IsEmpty;Name;PredefinedStyle;Range;RowFirstStripe;RowSecondStripe
+Forms	ITabTableStyles	interface	Add;Clear;Count;FindByName(FindByName(Value: String):  ITabTableStyle ;);Item(Item(Index: Integer):  ITabTableStyle ;);LoadFromXml(LoadFromXml(Xml: String););Move(Move(IndexFrom: Integer, IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);SaveToXml
+Forms	ITabUnknownParameterException	interface	SetParamName(SetParamName (Value: String);)
+Forms	ITabUserInteractiveSelection	interface	BorderColor;BorderStyle;InteractiveRestrictions;Range;Visible
+Forms	ITabUserInteractiveSelectionChangeEventArgs	interface	Cancel
+Forms	ITabUserInteractiveSelectionEventArgs	interface	Selection;Type
+Forms	ITabUserInteractiveSelections	interface	Add;Clear;Count;Item(Item(Index: Integer):  ITabUserInteractiveSelection ;);Remove(Remove(Index: Integer): Boolean;)
+Forms	ITabView	interface	ActiveColumn;ActiveRow;AllowMouseWheelScroll;AllowUnlimitedScroll;AutoFilter;BottomRow;ColumnsHeaderHeight;ContextButton;ConvertPtToView(ConvertPtToView(PtInPix:  IGxPoint ):);DisplayAccessRights;DisplayClippedCellHints;DisplayColumnNames;DisplayDarkFixedBorder;DisplayFixedAreaLines;DisplayFootnotesToolTips;DisplayGrid;DisplayNumberSigns;DisplayNumericColumnNames;DisplayPaperOut;DisplayPasteOptions;DisplayRegion;DisplayRowNumbers;EditCell(EditCell(Row: Integer; Column: Integer): Boolean;);EmulateCellClick(EmulateCellClick(Row: Integer; Column: Integer););EmulateCellPictureClick(EmulateCellPictureClick(Row: Integer; Column: Integer););EmulateHyperlinkClick(EmulateHyperlinkClick(Row: Integer; Column: Integer););EnableHyperlinks;EnableInteractiveSelection;EndEdit(EndEdit(SaveValue: Boolean););EnsureRowVisible(EnsureRowVisible(Row: Integer););ExpanderWidth;Fixed;FixedAreaLinesColor;FixedBehaviour;FixedBordersStyle;FixedColumnsCount;FixedRowsCount;HeadersSelectionColor;HighlightFormulas;HitTest(HitTest(X: Integer; Y: Integer):  TabViewArea ;);HitTestCell(HitTestCell(X: Integer; Y: Integer; Var Row: Integer;);HitTestObject(HitTestObject(X: Integer; Y: Integer):  ITabObject ;);HitTestRegion(HitTestRegion(X: Integer; Y: Integer):  ITabRegion ;);LeftColumn;Protection;RightColumn;RowsHeaderWidth;Scale;Selection;SelectionBorderColor;SelectionColor;SelectionMovementDirection;ShowFormatDialogEx(ShowFormatDialogEx(Wnd:  IWin32Window ););ShowFormulaWizard(ShowFormulaWizard(Wnd:  IWin32Window ;);Size;TabLineFeed;TopRow;UserIntearactiveSelections;VisibleScrollBars
+Forms	ITimer	interface	
+Forms	IToolbar	interface	
+Forms	ITrackBar	interface	
+Forms	ITreeList	interface	
+Forms	IUiTabSheet	interface	TabSheet
+Forms	OnAfterEditITabSheetBoxEventsDelegate		
+Forms	OnAfterObjectChangeITabSheetBoxEventsDelegate		
+Forms	OnAutoFilterITabSheetBoxEventsDelegate		
+Forms	OnBeforeCellChangeITabSheetBoxEventsDelegate		
+Forms	OnBeforeCellsChangeITabSheetBoxEventsDelegate		
+Forms	OnBeforeColumnResizeITabSheetBoxEventsDelegate		
+Forms	OnBeforeEditITabSheetBoxEventsDelegate		
+Forms	OnBeforeExpanderChangedITabSheetBoxEventsDelegate		
+Forms	OnBeforeObjectChangeITabSheetBoxEventsDelegate		
+Forms	OnBeforeRowResizeITabSheetBoxEventsDelegate		
+Forms	OnBeginInteractiveSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnBeginSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnCellChangeITabSheetBoxEventsDelegate		
+Forms	OnCellClickITabSheetBoxEventsDelegate		
+Forms	OnCellPictureClickITabSheetBoxEventsDelegate		
+Forms	OnCellsChangeITabSheetBoxEventsDelegate		
+Forms	OnChangeCellContentITabSheetBoxEventsDelegate		
+Forms	OnColumnClickITabSheetBoxEventsDelegate		
+Forms	OnColumnResizeITabSheetBoxEventsDelegate		
+Forms	OnColumnResizingITabSheetBoxEventsDelegate		
+Forms	OnEditorTextChangedITabSheetBoxEventsDelegate		
+Forms	OnEndInteractiveSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnEndSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnExpanderChangedITabSheetBoxEventsDelegate		
+Forms	OnHyperlinkClickITabSheetBoxEventsDelegate		
+Forms	OnInteractiveSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnObjectActivateITabSheetBoxEventsDelegate		
+Forms	OnObjectMovingITabSheetBoxEventsDelegate		
+Forms	OnObjectResizingITabSheetBoxEventsDelegate		
+Forms	OnProtectionFailITabSheetBoxEventsDelegate		
+Forms	OnRowClickITabSheetBoxEventsDelegate		
+Forms	OnRowResizeITabSheetBoxEventsDelegate		
+Forms	OnRowResizingITabSheetBoxEventsDelegate		
+Forms	OnScaleChangeITabSheetBoxEventsDelegate		
+Forms	OnSelectionChangeITabSheetBoxEventsDelegate		
+Forms	OnTableClickITabSheetBoxEventsDelegate		
+Forms	TabAccessRights	enum	
+Forms	TabActivationEditorMode	enum	
+Forms	TabAutoFilterAction	enum	
+Forms	TabAutoFilterBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Column: Integer; Action:  TabAutoFilterAction );)
+Forms	TabAutoFilterEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ; Column: Integer; Action:  TabAutoFilterAction );)
+Forms	TabBeforeExpanderChangedEventArgs	class	Create(Create(Sheet:  ITabSheetBox ;)
+Forms	TabBeforeObjectAngleChangeEventArgs	class	Create(TabBeforeObjectAngleChangeEventArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabBeforeObjectRectChangeEventArgs	class	Create(TabBeforeObjectAngleChangeEventArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabBorder	enum	
+Forms	TabBorderStyle	enum	
+Forms	TabBorderWeight	enum	
+Forms	TabCellAfterEditBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Cancel: Boolean);)
+Forms	TabCellAfterEditEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ; Row: Integer; Column: Integer; Cancel: Boolean);)
+Forms	TabCellBaseEventArgs	class	CreateTabCellArgs(CreateTabCellArgs(TabSheet:  ITabSheet ; Row: Integer; Column: Integer);)
+Forms	TabCellBeforeChangeBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Value: Variant);)
+Forms	TabCellBeforeChangeEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabCellBeforeEditBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Cancel: Boolean);)
+Forms	TabCellBeforeEditEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabCellChangeBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Value: Variant);)
+Forms	TabCellChangeEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabCellContentChange	enum	
+Forms	TabCellContentChangeBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Value: Variant; Type:  TabCellContentChange );)
+Forms	TabCellContentChangeEventArgs	class	Create(Create()
+Forms	TabCellEventArgs	class	CreateTabCellArgs(CreateTabCellArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabCellFormatDlg	class	
+Forms	TabCellIteratorOrder	enum	
+Forms	TabCellSearchDirection	enum	
+Forms	TabCellSearchTarget	enum	
+Forms	TabCellStyle	class	
+Forms	TabCleanPart	enum	
+Forms	TabColumnBaseEventArgs	class	CreateTabColumnArgs(CreateTabColumnArgs(TabSheet:  ITabSheet ; Column: Integer);)
+Forms	TabColumnEventArgs	class	CreateTabColumnArgs(TabColumnEventArgs.CreateTabColumnArgs(TabSheet:)
+Forms	TabColumnResizeEventArgs	class	CreateColumnResizeArgs(CreateColumnResizeArgs(Sheet:  ITabSheetBox ; Column: Integer; ResizeType:  TabRowColumnResizeType );)
+Forms	TabColumnResizingEventArgs	class	Create(Create(Sheet:  ITabSheetBox ; Column: Integer; ResizeType:  TabRowColumnResizeType ; Cancel: Boolean);)
+Forms	TabConditionCellContentDate	enum	
+Forms	TabConditionCellContentText	enum	
+Forms	TabConditionCellContentValue	enum	
+Forms	TabConditionIconRangeCond	enum	
+Forms	TabConditionIconType	enum	
+Forms	TabConditionPredefinedDataBarStyle	enum	
+Forms	TabConditionPredefinedGradientStyle	enum	
+Forms	TabConditionPredefinedScaleStyle	enum	
+Forms	TabConditionType	enum	
+Forms	TabCursor	enum	
+Forms	TabCustomSortDirection	enum	
+Forms	TabCustomSortType	enum	
+Forms	TabDeleteShiftDirection	enum	
+Forms	TabEditorEventArgs	class	CreateEditorArgs(CreateEditorArgs(TabSheet:  ITabSheetBox ; Editor:  ITabEditor );)
+Forms	TabEmptyValuesTreatmentType	enum	
+Forms	TabExpanderChangedEventArgs	class	CreateExpanderArgs(CreateExpanderArgs(Sheet:  ITabSheetBox ;)
+Forms	TabExpanderKind	enum	
+Forms	TabFindReplaceFormat	enum	
+Forms	TabFixedBehaviour	enum	
+Forms	TabFontCharset	enum	
+Forms	TabFootnotesBox	class	
+Forms	TabFootnotesLocation	enum	
+Forms	TabFootnotesNumberingRule	enum	
+Forms	TabFormatAlignment	enum	
+Forms	TabFormatAverageType	enum	
+Forms	TabFormatColorScaleTargetType	enum	
+Forms	TabFormatConditions	class	
+Forms	TabFormatContentType	enum	
+Forms	TabFormatDlgItems	enum	
+Forms	TabFormatDlgPages	enum	
+Forms	TabFormatDuplicateType	enum	
+Forms	TabFormatGrowthDirection	enum	
+Forms	TabFormatLayout	enum	
+Forms	TabFormatNumericScaleTargetType	enum	
+Forms	TabFormatRankType	enum	
+Forms	TabFormatValueType	enum	
+Forms	TabFormatValuesStyle	enum	
+Forms	TabFormatWordWrap	enum	
+Forms	TabFormatWrapMode	enum	
+Forms	TabHyperlinkActionType	enum	
+Forms	TabHyperlinkClickBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Row: Integer; Column: Integer; Type:  TabHyperlinkObjectType );)
+Forms	TabHyperlinkClickEventArgs	class	Create(Create(Sheet:  ITabSheetBox ; Row: Integer; Column: Integer; Type:  TabHyperlinkObjectType );)
+Forms	TabHyperlinkObjectType	enum	
+Forms	TabHyperlinkTarget	enum	
+Forms	TabIconExporter	class	
+Forms	TabInsertShiftDirection	enum	
+Forms	TabInteractiveSelectionChangeEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ; Range:  ITabRange ; Type:  TabInteractiveSelectionType ; Cancel: Boolean);)
+Forms	TabInteractiveSelectionEventArgs	class	CreateInteractiveSelectionArgs(CreateInteractiveSelectionArgs(TabSheet:  ITabSheetBox ; Range:  ITabRange ; Type:  TabInteractiveSelectionType );)
+Forms	TabInteractiveSelectionType	enum	
+Forms	TabMargin	enum	
+Forms	TabNotNumberException	class	CreateEx
+Forms	TabNumberStyle	enum	
+Forms	TabObjectAction	enum	
+Forms	TabObjectActivationMode	enum	
+Forms	TabObjectBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ;)
+Forms	TabObjectChangeEventArgs	class	CreateObjectChangeArgs(CreateObjectChangeArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabObjectChangeType	enum	
+Forms	TabObjectEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabObjectExporter	class	
+Forms	TabObjectFlip	enum	
+Forms	TabObjectInteractiveRestrictions	enum	
+Forms	TabObjectMovementMode	enum	
+Forms	TabObjectMovingEventArgs	class	Create(Create(Sheet:  ITabSheetBox ;)
+Forms	TabObjectResizingEventArgs	class	Create(Create(Sheet:  ITabSheetBox ;)
+Forms	TabObjectResizingSide	enum	
+Forms	TabObjectsAdjustment	enum	
+Forms	TabObjectsAlignment	enum	
+Forms	TabPageSettings	class	
+Forms	TabPasteMode	enum	
+Forms	TabPattern	enum	
+Forms	TabPictureHorizontalAlignment	enum	
+Forms	TabPictureVerticalAlignment	enum	
+Forms	TabProtectionFailedBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Target: Variant; Message: String);)
+Forms	TabProtectionFailedEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabRangeAdjustHeightFlags	enum	
+Forms	TabRangeCombineMode	enum	
+Forms	TabRangeDeleteEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabRangeFillType	enum	
+Forms	TabRangeInsertEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabRangeToArrayFlags	enum	
+Forms	TabRangeType	enum	
+Forms	TabRequiredParametersException	class	CreateEx
+Forms	TabRowBaseEventArgs	class	CreateTabRowArgs(CreateTabRowArgs(TabSheet:  ITabSheet ; Row: Integer);)
+Forms	TabRowColumnResizeType	enum	
+Forms	TabRowEventArgs	class	CreateTabRowArgs(CreateTabRowArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabRowResizeEventArgs	class	CreateRowResizeArgs(CreateRowResizeArgs(Sheet:  ITabSheetBox ; Row: Integer; ResizeType:  TabRowColumnResizeType );)
+Forms	TabRowResizingEventArgs	class	Create(Create(Sheet:  ITabSheetBox ; Row: Integer; ResizeType:  TabRowColumnResizeType ; Cancel: Boolean);)
+Forms	TabScaleBaseEventArgs	class	Create(Create(TabSheet:  ITabSheet ; Scale: Double);)
+Forms	TabScaleEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabSelectionMovementDirection	enum	
+Forms	TabSelectionStyle	enum	
+Forms	TabSheet	class	
+Forms	TabSheetBaseEventArgs	class	CreateArgs(CreateArgs(TabSheet:  ITabSheet );)
+Forms	TabSheetBox	class	OnAfterDeleteRange(Sub  OnAfterDeleteRange(Sender:);OnAfterEdit(Sub  TabSheetBoxOnAfterEdit(Sender:);OnAfterInsertRange(Sub  OnAfterInsertRange(Sender:);OnAfterObjectChange(Sub  OnAfterObjectChange(Sender:);OnAutoFilter(Sub  TabSheetBoxOnAutoFilter(Sender:);OnBeforeCellChange(Sub  TabSheetBoxOnBeforeCellChange(Sender:);OnBeforeCellsChange(Sub  TabSheetBoxOnBeforeCellsChange(Sender:);OnBeforeColumnResize(Sub  OnBeforeColumnResize(Sender: Object; Args:  ITabColumnEventArgs ););OnBeforeDeleteRange(Sub  OnBeforeDeleteRange(Sender:);OnBeforeEdit(Sub  TabSheetBoxOnBeforeEdit(Sender:);OnBeforeExpanderChanged(Sub  OnBeforeExpanderChanged(Sender: Object; Args:  ITabBeforeExpanderChangedEventArgs ););OnBeforeInsertRange(Sub  OnBeforeInsertRange(Sender:);OnBeforeObjectChange(Sub  OnBeforeObjectChange(Sender: Object; Args:  ITabObjectChangeEventArgs ););OnBeforeRowResize(Sub  OnBeforeRowResize(Sender: Object; Args:  ITabRowEventArgs ););OnBeginInteractiveSelectionChange(Sub  OnBeginInteractiveSelectionChange(Sender: Object; Args:  ITabInteractiveSelectionEventArgs ););OnBeginSelectionChange(Sub  TabSheetBoxOnBeginSelectionChange(Sender:);OnBeginUserInteractiveSelectionChange(Sub  OnBeginUserInteractiveSelectionChange(Sender:);OnCellChange(Sub  TabSheetBoxOnCellChange(Sender:);OnCellClick(Sub  TabSheetBoxOnCellClick(Sender:);OnCellPictureClick(Sub  TabSheetBoxOnCellPictureClick(Sender:);OnCellsChange(Sub  TabSheetBoxOnCellsChange(Sender:);OnChangeCellContent(Sub  TabSheetBox1OnChangeCellContent(Sender:);OnColumnClick(Sub  TabSheetBoxOnColumnClick(Sender:);OnColumnResize(Sub  OnColumnResize(Sender: Object; Args:  ITabColumnResizeEventArgs ););OnColumnResizing(Sub  OnColumnResizing(Sender: Object; Args:  ITabColumnResizingEventArgs ););OnEditorTextChanged(Sub  OnEditorTextChanged(Sender:);OnEndInteractiveSelectionChange(Sub  OnEndInteractiveSelectionChange(Sender: Object; Args:  ITabInteractiveSelectionEventArgs ););OnEndSelectionChange(Sub  TabSheetBoxOnEndSelectionChange(Sender:);OnEndUserInteractiveSelectionChange(Sub  OnEndUserInteractiveSelectionChange(Sender:);OnExpanderChanged(Sub  OnExpanderChanged(Sender: Object; Args:  ITabExpanderChangedEventArgs ););OnHyperlinkClick(Sub  TabSheetBoxOnHyperlinkClick(Sender:);OnInteractiveSelectionChange(Sub  OnInteractiveSelectionChange(Sender: Object; Args:   ITabInteractiveSelectionChangeEventArgs  ););OnObjectActivate(Sub  OnObjectActivate(Sender:);OnObjectMoving(Sub  OnObjectMoving(Sender:);OnObjectResizing(Sub  OnObjectResizing(Sender:);OnObjectsSelectionChanged(Sub  OnObjectsSelectionChanged(Sender:);OnProtectionFail(Sub  TabSheetBoxOnProtectionFail(Sender:);OnRowClick(Sub  TabSheetBoxOnRowClick(Sender:);OnRowResize(Sub  OnRowResize(Sender: Object; Args:  ITabRowResizeEventArgs ););OnRowResizing(Sub  OnRowResizing(Sender: Object; Args:  ITabRowResizingEventArgs ););OnScaleChange(Sub  OnScaleChange(Sender:);OnSelectionChange(Sub  TabSheetBoxOnSelectionChange(Sender:);OnTableClick(Sub  TabSheetBoxOnTableClick(Sender:);OnUserInteractiveSelectionChange(Sub  OnUserInteractiveSelectionChange(Sender:)
+Forms	TabSheetEventArgs	class	CreateArgs(CreateArgs(TabSheet:  ITabSheetBox );)
+Forms	TabSheetExporter	class	
+Forms	TabTableCleanPart	enum	
+Forms	TabTablePredefinedStyle	enum	
+Forms	TabTableStyle	class	
+Forms	TabTableStyles	class	
+Forms	TabUnknownParameterException	class	CreateEx
+Forms	TabUserInteractiveSelectionChangeEventArgs	class	Create(Create(TabSheet:  ITabSheetBox ;)
+Forms	TabUserInteractiveSelectionChangeType	enum	
+Forms	TabUserInteractiveSelectionEventArgs	class	CreateInteractiveSelectionArgs(CreateInteractiveSelectionArgs(TabSheet:  ITabSheetBox ;)
+Forms	TabViewArea	enum	
+Forms	TabViewEventGroups	enum	
+Forms	TabViewScrollBars	enum	
+Forms	UiTabSheet	class	
+IO	BinaryReader	class	
+IO	BinaryWriter	class	
+IO	Directory	class	
+IO	File	class	
+IO	FileStream	class	
+IO	IBinaryReader	interface	
+IO	IBinaryWriter	interface	
+IO	IFileStream	interface	
+IO	IIOStream	interface	
+IO	IMemoryStream	interface	
+IO	ITextReader	interface	
+IO	ITextWriter	interface	
+IO	MemoryStream	class	
+IO	Path	class	
+IO	TextReader	class	
+IO	TextWriter	class	
+Metabase	AccessAttributeValue	class	Create(Create(BitCount: Integer; Value: Variant);)
+Metabase	AccessElementApplyOptions	enum	
+Metabase	AccessElementAttributes	enum	
+Metabase	AceType	enum	
+Metabase	AdmUserType	enum	
+Metabase	ApplyStateType	enum	
+Metabase	AuditFiltersContainer	class	
+Metabase	AuditLogArchiveFormat	enum	
+Metabase	AuditLogSpecificRights	enum	
+Metabase	AuthenticationMode	enum	
+Metabase	CalculatedCubeSpecificRights	enum	
+Metabase	CallbackOperationState	enum	
+Metabase	CertificateStorageType	enum	
+Metabase	ControlMethodsCombineAlgorithm	enum	
+Metabase	CubeLoaderSpecificRights	enum	
+Metabase	CubeSpecificRights	enum	
+Metabase	CustomObjectSpecificRights	enum	
+Metabase	DataBaseSpecificRights	enum	
+Metabase	DeleteObjectOptions	enum	
+Metabase	DictionarySpecificRights	enum	
+Metabase	DomainLogonType	enum	
+Metabase	DomainSelectType	enum	
+Metabase	DomainSubjectAddState	enum	
+Metabase	FindAttribute	enum	
+Metabase	FindAttributeEx	enum	
+Metabase	ForeMetabaseCustomEvents	class	
+Metabase	IAccessAttributeValue	interface	BitCount;ToInteger;ToString;Value(Value(Index: Integer): Boolean;)
+Metabase	IAccessControlEntry	interface	AccessMask;Sid;Type
+Metabase	IAccessControlList	interface	AddAce(AddAce(Type:  AceType ;);Append(Append(Source:  IAccessControlList ););Assign(Assign(Source:  IAccessControlList ););Clear;Count;Item(Item(Index: Integer):  IAccessControlEntry ;);Remove(Remove(Index: Integer): Boolean;)
+Metabase	IAccessElement	interface	AccessToken;Apply(Apply(Options:  AccessElementApplyOptions ););ApplyAccessToken(ApplyAccessToken(Options:  AccessElementApplyOptions ););AttributeAccess(AttributeAccess(Attribute:  AccessElementAttributes ):);Edit;Key;Name
+Metabase	IAccessElementsIterator	interface	Current;Next
+Metabase	IAccessObjectSecurity	interface	Attributes;GetElements;Labels
+Metabase	IAccessToken	interface	Assign(IAccessToken.Assign(Source:  IAccessToken ););ClassificationLabel(ClassificationLabel(Category:  ISecurityCategory ):)
+Metabase	IApplicationRole	interface	Active;Name;Password;PasswordSalt;Privilegies;UseDerivedPassword
+Metabase	IAssembly	interface	Modified;Permanent;References
+Metabase	IAuditFilter	interface	Add;Append(Append(Value:  IAuditFilter ););Assign(Assign(Value:  IAuditFilter ););Clear;Count;DateOrderAsccending;Item(Item(Index: Integer):  IAuditFilterCondition ;);Move(Move(IndexFrom: Integer; IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);Top
+Metabase	IAuditFilterCondition	interface	ClassCount;ClassId(ClassId(Index: Integer): Integer;);IdFilter;IncludeFailedLogons;IncludeFailedOperations;IncludeSucceededLogons;IncludeSucceededOperations;IsAnd;IsNot;MaxDate;MinDate;NameFilter;ObjectKey(ObjectKey(Index: Integer): Integer;);ObjectKeyCount;Operation(Operation(Index: Integer): Integer;);OperationClass(OperationClass(Index: Integer): Integer;);OperationCount;Station(Station(Index: Integer): String;);StationCount;UserIP(UserIP(Index: Integer): String;);UserIPCount;UserName(UserName(Index: Integer): String;);UserNameCount;UserOS(UserOS(Index: Integer): String;);UserOSCount
+Metabase	IAuditFilterObject	interface	Assign(Assign(Value:  IAuditFilterObject ););Container;Description;Edit;Filter;Save
+Metabase	IAuditFilterObjects	interface	Add;Clear;Count;FindById(FindById(Id: String):  IAuditFilterObject ;);FindByKey(FindByKey(Key: String):  IAuditFilterObject ;);Item(Item(Index: Integer):  IAuditFilterObject ;);Move(Move(IndexFrom: Integer; IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: String): Boolean;)
+Metabase	IAuditFiltersContainer	interface	Append(Append(Value:  IAuditFiltersContainer ););Assign(Assign(Value:  IAuditFiltersContainer ););Callback;DefaultFileName;FileName;Filters;Load;LoadFromFile(LoadFromFile(FileName: String););SaveToFile(SaveToFile(FileName: String);)
+Metabase	IAuditLog	interface	Archival;Archive(Archive(FileName: String; [Callback:  IAuditLogArchiveCallback);ArchiveToDate(ArchiveToDate(Stamp: DateTime; FileName: String;);CountLogons(CountLogons([NoFilterLogons: Boolean = False]):);CountOperations(CountOperations([Session: Integer = -1]; [Operation:);Filter;OpenLogons(OpenLogons(NoFilterLogons: Boolean):  IAuditLogons ;);OpenOperationTree(OpenOperationTree(Session: Integer; Operation: Integer):);OpenOperations(OpenOperations(Session: Integer):  IAuditOperations ;)
+Metabase	IAuditLogArchiveCallback	interface	OnProgress(OnProgress(Current: Integer; Total: Integer);)
+Metabase	IAuditLogons	interface	Comment;CommentOut;Session;Stamp;StampOut;Station;Succeeded;UserDescription;UserIP;UserName;UserOS;UserSid
+Metabase	IAuditOperations	interface	Comment;DateOrderAsccending;IsLogon;IsObjectLabelSupported;Level;Logon;Mask;Name;ObjectClass;ObjectId;ObjectKey;ObjectLabel;ObjectName;Operation;Position;Session;Stamp;Succeeded
+Metabase	ICertCredentials	interface	AccessTokenStr;Certificate;Cookie;RolesStr;Signature;UserName
+Metabase	ICertProvider	interface	Code(Code(Cookie: String): String;);NewCode(NewCode(Var Cookie: String; Var Code: String););OpenSigner(OpenSigner(Name: String; Data:  IIOStream ):);OpenSignerBase64(OpenSignerBase64(Name: String; Data: String):  ICertSigner ;);OpenVerifier(OpenVerifier(Name: String; Data:  IIOStream ):);OpenVerifierBase64(OpenVerifierBase64(Name: String; Data: String):)
+Metabase	ICertSigner	interface	Name;Sign(Sign(Code: String): String;)
+Metabase	ICertVerifier	interface	Name;Verify(Verify(Code: String; Signature: String): Boolean;)
+Metabase	ICertificate	interface	Data;GetData(GetData(Stream:  IIOStream ););SetData(SetData(Stream:  IIOStream );)
+Metabase	ICertificates	interface	Add(Add(Id: String):  ICertificate ;);Clear;Count;FindById(FindById(Id: String):  ICertificate ;);FindByKey(FindByKey(Key: Integer):  ICertificate ;);Item(Item(Index: Integer):  ICertificate ;);Remove(Remove(Index: Integer): Boolean;);RemoveById(RemoveById(Id: String): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IConnectedUserInfo	interface	HostName;NETAddress;UserName;UserOsName
+Metabase	IConnectedUserInfoEx	interface	HostName;NetAddress;SessionId;UserName;UserOsName
+Metabase	IConnectedUsersInfo	interface	Count;Item(Item(Index: Integer):  IConnectedUserInfo ;)
+Metabase	IConnectedUsersInfoEx	interface	Count;Item(Item(Index: Integer):  IConnectedUserInfoEx ;)
+Metabase	IConnectionTransaction	interface	Commit;CreateCommand(CreateCommand (Sql: String):  IDalCommand ;);Rollback
+Metabase	ICredentials	interface	Assign(Assign(Source:  ICredentials ););Authentication;ConnectAsPrivilege;ErrorMessage;ForceError;Role;SlotCount;SlotName(SlotName(Index: Intege): String;);SlotValue(SlotValue(SlotName: String): Variant;);UseUserOSForDocumentLabels;UserCertificate;UserDescription;UserIP;UserOS;UserStation
+Metabase	ICredentialsEx	interface	Impersonation
+Metabase	ICredentialsRealm	interface	Credentials;Realm
+Metabase	ICredentialsSet	interface	Add(Add(Realm: String):  ICredentialsRealm ;);Clear;Count;Default_;Find(Find(Realm: String):  ICredentialsRealm ;);Item(Item(Index: Integer):  ICredentialsRealm ;);Remove(Remove(Index: Integer): Boolean;)
+Metabase	ICustomObjectResolver	interface	ClassId;Description;Id;Key;Name;ReadToFile(ReadToFile(FileName: String););ReadToStream(ReadToStream(Stream:  IIOStream ););ReadToXML(ReadToXML(Var Xml: Variant););References;WriteFromFile(WriteFromFile(FileName: String););WriteFromStream(WriteFromStream(Stream:  IIOStream ););WriteFromXML(WriteFromXML(Var Xml: Variant);)
+Metabase	IDatabaseInitExecuteSetup	interface	Database;Macro;Module
+Metabase	IDbClass	interface	IsAbstract;IsObsolete;SupportsElementDependencies;SupportsElementDependents
+Metabase	IDbClasses	interface	Count;FindByKey(FindByKey(Key: Integer):  IDbClass ;);Item(Item(Index: Integer):  IDbClass ;)
+Metabase	IDbDriver	interface	
+Metabase	IDbDrivers	interface	Count;FindById(FindById(Id: String):  IDbDriver ;);Item(Item(Index: Integer):  IDbDriver ;)
+Metabase	IDomain	interface	Comment;Name;Stations
+Metabase	IDomainCredentials	interface	Domain;LogonAsCurrentUser;LogonType;Password;UserName
+Metabase	IDomainStations	interface	Add(Add(Name: String):  IStation ;);Remove(Remove(Index: Integer): Boolean;);RemoveByName(RemoveByName(Name: String): Boolean;)
+Metabase	IDomains	interface	Add(Add(Name: String):  IDomain ;);Count;FindByName(FindByName(Name: String):  IDomain ;);Item(Item(Index: Integer):  IDomain ;);Refresh;Remove(Remove(Index: Integer): Boolean;);RemoveByName(RemoveByName(Name: String): Boolean;)
+Metabase	IFolder	interface	
+Metabase	IForm	interface	Content;CreateFormControl(CreateFormControl(pParent: Object): Object;)
+Metabase	IHashedPasswords	interface	ExcludeAdmin;IsON
+Metabase	ILogonHours	interface	Clear;Count;CreateCopy;FindByDate(FindByDate(Current: DateTime):  ILogonPeriod ;);Item(Item(Index: Integer):  ILogonPeriod ;);Remove(Remove(Index: Integer): Boolean;);SetPeriodAccess(SetPeriodAccess(Begin_: DateTime; End_: DateTime;)
+Metabase	ILogonHoursPeriod	interface	Begin_;End_;Hours
+Metabase	ILogonHoursPeriods	interface	Clear;Count;CreateCopy;CreateHours;FindByDate(FindByDate(Current: DateTime):  ILogonHoursPeriod ;);Item(Item(Index: Integer):  ILogonHoursPeriod ;);Remove(Remove(Index: Integer): Boolean;);SetPeriodAccess(SetPeriodAccess(Begin_: DateTime, End_:)
+Metabase	ILogonHoursPolicy	interface	FindByDate(FindByDate(Current: DateTime):  ILogonPeriod ;);Periods;WeekDayHours(WeekDayHours(Index:  CalendarDayOfWeek ):)
+Metabase	ILogonParams	interface	Creds;Data;Descr;ErrorException;MetabaseCompatible;NoAsk;NoCache;OK;Pack;Realm;ReportError;ToAdmin;UseMetabaseLogonCredentials
+Metabase	ILogonPeriod	interface	Allowed;Begin_;End_
+Metabase	ILogonSession	interface	CreateLogonParams;Credentials(Credentials(Realm: String; [ToAdmin: Boolean = False]):);Groups;Key;LogonCredentials;LogonData;OnLogon(OnLogon(Data:  ILogonParams ););PrimaryConnection;User;UserDescription;UserIP;UserOS;UserStation;UserToken
+Metabase	IMbElementDependencies	interface	Add(Add(Value:    IMbElementDependencyTemplate   ):);Clear;Count;Database;Item(Item(Index: Integer): IMbElementDependency;);Modified;Remove(Remove(Index: Integer): Boolean;);Where
+Metabase	IMbElementDependenciesDatabase	interface	Active;Delete(Delete(Where:  IMbElementDependencyTemplate ););Exists(Exists(Where:  IMbElementDependencyTemplate ):);Metabase;New_;Select_(Select_(Where:  IMbElementDependencyTemplate ):  IMbElementDependencies ;);Update(Update(Value:  IMbElementDependencies );)
+Metabase	IMbElementDependency	interface	Dictionary;Object
+Metabase	IMbElementDependencyTemplate	interface	DictionaryKey;ElementKey;ElementKeys;ElementKeysCount;ObjectKey
+Metabase	IMbElementDependent	interface	Dictionary;Object
+Metabase	IMbElementDependentTemplate	interface	DictionaryKey;ElementKey;ElementKeys;ElementKeysCount;ObjectKey;ObjectKeys;ObjectKeysCount
+Metabase	IMbElementDependents	interface	Add(Add(Value:  IMbElementDependentTemplate ):);Clear;Count;Database;Item(Item(Index: Integer):  IMbElementDependent ;);Modified;Remove(Remove(Index: Integer): Boolean;);Where
+Metabase	IMbElementDependentsDatabase	interface	Active;Delete(Delete(Where:  IMbElementDependentTemplate ););Exists(Exists(Where:  IMbElementDependentTemplate ):);Metabase;New_;Select_(Select_(Where:  IMbElementDependentTemplate ):);Update(Update(Value:  IMbElementDependents );)
+Metabase	IMetabase	interface	AbandonMerge;Bind(Bind(Key: Integer):  IMetabaseObject ;);Cache;CacheAutoClear;CheckInEx(CheckInEx(Objects:  IMetabaseObjectDescriptors ;);CheckInFiles(CheckInFiles(Objects:  IMetabaseObjectDescriptors ,);Classes;ClearDocumentCacheFiles;CompileAssemblyOnly;CopyObject(CopyObject(Info:  IMetabaseObjectCopyInfo ););CreateCheckList;CreateCodeBlock;CreateCopyInfo;CreateCreateInfo;CreateFindInfo;CreateObject(CreateObject(Info:  IMetabaseObjectCreateInfo ):);CreateUpdate;CurrentDomainSubjectAddState(CurrentDomainSubjectAddState(Type:  SecuritySubjectType ):);CurrentLocale;DefaultLocale;DeferredLoading;Definition;DeleteObject(DeleteObject(Key: Integer););DeleteObjectO(DeleteObjectO(Options: Integer; Key: Integer););ElementDependenciesDatabase;ElementDependentsDatabase;ExceptionHandler;ExceptionMailAddress;FetchItem(FetchItem(Key: Integer; [Options: Integer);FetchItemById(FetchItemById(Id: String; [Namespace_:Integer);FetchItems(FetchItems(Keys: Array; [Options: Integer);FetchItemsByld(FetchItemsById(Id: Array; [Namespace_: Integer);Find(Find(Info:  IMetabaseObjectFindInfo ):);GenerateId(GenerateId(Value: String; [Namespace_: Integer =);GenerateKey;GetConnectedUsers;GetConnectedUsersEx;GetCurrentStamp;GetCurrentStampMS;GetItems(GetItems(Keys: Array):  IMetabaseObjectDescriptors ;);GetObjectKeyById(GetObjectKeyById(Value: String): Integer;);GetObjectKeyByIdNamespace(GetObjectKeyByIdNamespace(Value: String; [Namespace_:);GetPendingChangesVCS;GetPendingCheckins;IsDisconnected;IsScreenshotSupported;IsShared;Item(Item(Key: Integer):  IMetabaseObjectDescriptor ;);ItemById(ItemById(Id: String):  IMetabaseObjectDescriptor ;);ItemByIdNamespace(ItemByIdNamespace(Id: String; Namespace_:);LogonSession;Mode;MoveObject(MoveObject(Info:  IMetabaseObjectCopyInfo ););PrivateFolder;PrivateFolderRoot;Profiles;PullPush;Refresh;RefreshO(RefreshO(Options:  MetabaseRefreshOptions ;);RequestLicense(RequestLicense(FeatureType:  UiLicenseFeatureType ):);ReserveKeys(ReserveKeys(Count: Integer););ResolveConflict(ResolveConflict(Object:  IMetabaseObjectDescriptor ,);Root;Security;SingleUserMode;SpecialObject(SpecialObject(Index:  MetabaseSpecialObject ):);SpecialObjects(SpecialObjects(ForEdit: Boolean):  ISpecialObjects ;);UndoCheckOutEx(UndoCheckOutEx(Objects:  IMetabaseObjectDescriptors ;);UndoCheckOutFiles(UndoCheckOutFiles(Objects:  IMetabaseObjectDescriptors ,);UseReservedKeys
+Metabase	IMetabaseAuditPolicy	interface	FilterClass(FilterClass(ClassID: Integer): Integer;);LogRecordCountThreshold(LogRecordCountThreshold(State: Integer): Integer;);TrackClassHistory(TrackClassHistory(ClassID: Integer): Integer;)
+Metabase	IMetabaseAutoRun	interface	Object
+Metabase	IMetabaseCache	interface	Flush(Flush(Key: Integer): Boolean;);FlushAll;FlushById(FlushById(Id: String): Boolean;);FlushInstance(FlushInstance(Key: Integer; Values:  IMetabaseObjectParamValues ):);FlushInstanceById(FlushInstanceById(Id: String; Values:  IMetabaseObjectParamValues ):);GetInstance(GetInstance(Key: Integer; ParamValues:  IMetabaseObjectParamValues ):);GetInstanceById(GetInstanceById(Id: String; ParamValues:  IMetabaseObjectParamValues ):);MetabaseFlush(MetabaseFlush(Key: Integer): Boolean;);MetabaseFlushAll;SharedValue(SharedValue(Id: String): Variant;)
+Metabase	IMetabaseCheckList	interface	Add(Add(Value:  IMetabaseObjectDescriptor ):);Clear;Count;FindById(FindById(Id: String):  IMetabaseCheckListItem ;);FindByKey(FindByKey(Key: Integer):  IMetabaseCheckListItem ;);Item(Item(Index: Integer):  IMetabaseCheckListItem ;);LoadFromFile(LoadFromFile(FileName: String););LoadFromStream(LoadFromStream(Reader:  IIOStream ););Move(Move(IndexFrom: Integer; IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);SaveToFile(SaveToFile(FileName: String););SaveToStream(SaveToStream(Writer:  IIOStream );)
+Metabase	IMetabaseCheckListItem	interface	Hash;Object;Status
+Metabase	IMetabaseClass	interface	Active;CommonClassName(CommonClassName(MetabaseClass:  MetabaseObjectClass ;);GetMetabaseObjectClass(GetMetabaseObjectClass(ClassId: Integer):  MetabaseObjectClass ;);IconIndex(IconIndex(MetabaseClass:  MetabaseObjectClass ):)
+Metabase	IMetabaseClassSecurityDescriptor	interface	ClassId;Descriptor
+Metabase	IMetabaseClassesSecurityDescriptors	interface	Add(Add(ClassId:  MetabaseObjectClass ):);AddDescriptor(AddDescriptor(Value:  IMetabaseClassSecurityDescriptor ););Clear;Count;CreateDescriptor(CreateDescriptor(ClassId:  MetabaseObjectClass ):);Item(Item(Index: Integer):  IMetabaseClassSecurityDescriptor ;);ItemByClassId(ItemByClassId(ClassId:  MetabaseObjectClass ):);Remove(Remove(Index: Integer): Boolean;);RemoveByClassId(RemoveByClassId(ClassId:  MetabaseObjectClass ):)
+Metabase	IMetabaseCodeBlock	interface	ErrorMessage;Execute(Execute(SubName: String; Params: Array): Variant;);Line;Position;References;Text;Valid
+Metabase	IMetabaseCustomClass	interface	ClassId;Data;Description;ImplementationAssembly;ImplementationClass;ImplementationURL;IsContainer;Operations
+Metabase	IMetabaseCustomClassOperation	interface	
+Metabase	IMetabaseCustomClassOperations	interface	Add(Add(Operation: Integer):  IMetabaseCustomClassOperation ;);Clear;Count;FindById(FindById(Id: String):  IMetabaseCustomClassOperation ;);FindByKey(FindByKey(Key: Integer):  IMetabaseCustomClassOperation ;);Item(Item(Index: Integer):  IMetabaseCustomClassOperation ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseCustomClasses	interface	Add;Clear;Count;FindByClassId(FindByClassId(ClassId: Integer):  IMetabaseCustomClass ;);FindById(FindById(Id: String):  IMetabaseCustomClass ;);FindByKey(FindByKey(Key: Integer):  IMetabaseCustomClass ;);Item(Item(Index: Integer):  IMetabaseCustomClass ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseCustomEvents	interface	OnBeforeLogon(OnBeforeLogon(Args:  IMetabaseOnBeforeLogonArgs );)
+Metabase	IMetabaseCustomExtender	interface	Classes;Events;GetObjectLargeImages(GetObjectLargeImages(Var Imagelist: Object): Array;);GetObjectSmallImages(GetObjectSmallImages(Var Imagelist: Object): Array;);IsShared;LargeImages;NameResource;ResetObjectImages(ResetObjectImages(););Resource;SetObjectLargeImages(SetObjectLargeImages(Imagelist: Object; ARRAYID:);SetObjectSmallImages(SetObjectSmallImages(ImageList: Object; ARRAYID:);SmallImages
+Metabase	IMetabaseCustomForeEvent	interface	Invoke;InvokeEvent(InvokeEvent(SesConn:  ISecurityConnection );)
+Metabase	IMetabaseCustomForeEvents	interface	Add(Add(Id: String):  IMetabaseCustomForeEvent ;);Clear;Count;FindById(FindById(Id: String):  IMetabaseCustomForeEvent ;);FindByKey(FindByKey(Key: Integer):  IMetabaseCustomForeEvent ;);FindByName(FindByName(Name: String):  IMetabaseCustomForeEvent ;);Item(Item(Index: Integer):  IMetabaseCustomForeEvent ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseCustomObject	interface	CheckAndAudit(CheckAndAudit(OperationKey: Integer; Comment: String):);CheckAndAuditOperation(CheckAndAuditOperationLabel(OperationKey: Integer;);CheckAndAuditOperationLabel(CheckAndAuditOperationLabel(OperationKey: Integer;);CreateReader;CreateWriter;CustomClass;Extender
+Metabase	IMetabaseCustomObjectReader	interface	Load;ReadToFile(ReadToFile(FileName: String););ReadToStream(ReadToStream(Stream:  IIOStream ););ReadToXML(ReadToXML(Var Xml: Variant);)
+Metabase	IMetabaseCustomObjectReference	interface	Key;Object;Owner
+Metabase	IMetabaseCustomObjectReferences	interface	Add(Add(Object:  IMetabaseObjectDescriptor ):);AddWithOwner(AddWithOwner(Object:  IMetabaseObjectDescriptor ;);Clear;Count;FindByKey(FindByKey(Key: Integer):  IMetabaseCustomObjectReference ;);Item(Item(Index: Integer):  IMetabaseCustomObjectReference ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseCustomObjectSelSets	interface	Add(Add(Key: String; Obj: Object););AddWithOwner(AddWithOwner(Key: String; Obj: Object; Owner:  IMetabaseObjectDescriptor ););Clear;Count;FindByKey(FindByKey(Key: String): Object;);IndexByKey(IndexByKey(Key: String): Integer;);Item(Item(Index: Integer): Object;);KeyByIndex(KeyByIndex(Index: Integer): String;);OwnerByKey(OwnerByKey(Key: String):  IMetabaseObjectDescriptor ;);RemoveByIndex(RemoveByIndex(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: String): Boolean;)
+Metabase	IMetabaseCustomObjectSerializer	interface	ElementDependencies;Object;References;Selections
+Metabase	IMetabaseCustomObjectWriter	interface	NewElementDependencies;Save;WriteFromFile(WriteFromFile(FileName: String););WriteFromStream(WriteFromStream(Stream:  IIOStream ););WriteFromXML(WriteFromXML(Xml: Variant);)
+Metabase	IMetabaseDefinition	interface	AuxProjPath;CheckCustomEvents;CompileAssemblyOnly;DebugMode;Id;Manager;Name;Open(Open(Credentials:  ICredentials ;);OpenDefault(OpenDefault(Credentials:  ICredentials ):);Save;Scope;VcsLocalPath;VcsName
+Metabase	IMetabaseDefinitions	interface	Add;Count;FindById(FindById(Id: String):  IMetabaseDefinition ;);Item(Item(Index: Integer):  IMetabaseDefinition ;);ReadFromFile(ReadFromFile(FileName: String););ReadFromRegistry;RemoveById(RemoveById(Id: String): Boolean;)
+Metabase	IMetabaseDeviceDescriptor	interface	DeviceName;Key;SecurityDescriptor
+Metabase	IMetabaseDeviceDescriptors	interface	Add(Add(DeviceName:String):  IMetabaseDeviceDescriptor;);Count;Item(Item (Index:Integer): IMetabaseDeviceDescriptor ;);ItemByKey(ItemByKey (Key:Integer): IMetabaseDeviceDescriptor ;);Remove(Remove (Index:Integer): Boolean;);RemoveAll;RemoveByKey(RemoveByKey (Key:Integer);)
+Metabase	IMetabaseDevicePolicy	interface	Enumerate
+Metabase	IMetabaseGroup	interface	AddMember(AddMember(Subject:  ISecuritySubject ););Attributes;HasToken;IsMember(IsMember(Subject:  ISecuritySubject ):);Member(Member(Index: Integer):  ISecuritySubject ;);MemberCount;Profiles;RemoveMember(RemoveMember(Subject:  ISecuritySubject ););Role;Token
+Metabase	IMetabaseGroups	interface	Attributes;Count;Item(Item(Index: Integer):  IMetabaseGroup ;)
+Metabase	IMetabaseLink	interface	Credentials;LoginPrompt;UseMetabaseCredentials
+Metabase	IMetabaseLinkBase	interface	Authentication;DeferredLoading;DriverId;LogonData;SecurityPackage
+Metabase	IMetabaseLinkInstance	interface	Metabase
+Metabase	IMetabaseLogonEvents	interface	OnLogonUserMustChangePassword(OnLogonUserMustChangePassword(Connection:  IDalConnectionExt ;)
+Metabase	IMetabaseManager	interface	BuildMetadataCache;BuildMetadataCacheForMb(BuildMetadataCacheForMb(Metabase:  IMetabaseDefinition ););Classes;CleanMetadataCache;CleanMetadataCacheForMb(CleanMetadataCacheForMb(Metabase:  IMetabaseDefinition ););Definitions;Drivers;Packs;RevertToObject(RevertToObject(Model: Object):  IMetabaseObject ;)
+Metabase	IMetabaseManagerFactory	interface	Active
+Metabase	IMetabaseMandatoryAccess	interface	AddCategory(AddCategory(Name: String):  ISecurityCategory ;);Category(Category(Index: Integer):  ISecurityCategory ;);CategoryCount;IsSimple;RemoveCategory(RemoveCategory(Index: Integer): Boolean;)
+Metabase	IMetabaseObject	interface	Assign(Assign(Value:  IMetabaseObject ););CachingMode;CreateUpdateExParams;EditRequiresAdditionalLicense;FlushInstance(FlushInstance(Value:  IMetabaseObjectParamValues ):);FlushInstances;GetExtensionDispatch;GetModelDispatch;GetXml;InitControlledParams(InitControlledParams(ObjKey: Integer; ObjParams:);IsDirty;ParamValues;Save
+Metabase	IMetabaseObjectCache	interface	Count;Flush;Item(Item(Index: Integer):  IMetabaseObjectCacheItem ;);Open(Open(Params:  IMetabaseObjectParamValues ):  IMetabaseObjectInstance ;);Put(Put(Instance:  IMetabaseObjectInstance ););Refresh
+Metabase	IMetabaseObjectCacheItem	interface	Flush;Open;ParamValues;Refresh;Replace(Replace(Instance:  IMetabaseObjectInstance ););Timestamp
+Metabase	IMetabaseObjectControl	interface	ControlledObject;Count;FindByKey(FindByKey(ParamKey: Integer):  IMetabaseObjectParamControl ;);IsEmpty;Item(Item(Index: Integer):  IMetabaseObjectParamControl ;)
+Metabase	IMetabaseObjectControlInfo	interface	Count;FindByKey(FindByKey(ObjectKey: Integer):  IMetabaseObjectControl ;);GetObjectControlIsEmpty(GetObjectControlIsEmpty(ObjectKey: Integer): Boolean;);Item(Item(Index: Integer):  IMetabaseObjectControl ;)
+Metabase	IMetabaseObjectCopyInfo	interface	Assign;Destination;Id;Name;NoSave;NoSaveEvent;Source;WithData
+Metabase	IMetabaseObjectCreateInfo	interface	ClassId;DefaultId;DefaultName;ElementDependenciesTrackingType;Id;IsInternal;IsShortcut;IsTemporary;KeepEdit;Link;Name;Parent;Permanent;Shortcut;SkipIdFormatCheck
+Metabase	IMetabaseObjectDescriptor	interface	Attributes;Bind;Cache;CheckAndAudit(CheckAndAudit(Operation: Integer; Comment:);CheckAndAuditLabel(CheckAndAuditLabel(Operation: Integer; Comment:);CheckAndAuditOperation(CheckAndAuditOperation(Operation: Integer;);CheckAndAuditOperationLabel(CheckAndAuditOperationLabel(Operation: Integer;);CheckIn;CheckInEx(CheckInEx(Var ResId: Integer): Boolean;);CheckOut;Children;ClassId;CommonClassName(CommonClassName([CasePlural:  NameCasePlural);Dependencies(Dependencies(FromSource: Boolean):  IMetabaseObjectDescriptors ;);Dependents;Description;Edit;EditDescriptor;EditTemporary;ElementDependencies;ElementDependenciesTrackingType;ElementDependents;FetchChildren;FetchDependencies(FetchDependencies(FromSource: Boolean):);FetchDependents;FindNext(FindNext(Info:  IMetabaseObjectFindInfo ):);GetChangesHistory(GetChangesHistory(Start: DateTime; End_:);GetCheckOutInfo;GetExternalOpenXml(GetExternalOpenXml([Options: Integer = 0]): Object;);GetHistory;GetLatestVCS(GetLatestVCS([Recursive: Boolean = False;]);GetSecurity;HasAccess(HasAccess(AccessMask: Integer): Boolean;);HasChildren;HistoryVCS;IconIndex;Id;IsCheckedOut;IsDeferred;IsEdited;IsInternal;IsLink;IsPermanent;IsShared;IsSharingSupported;IsShortcut;IsSpecial(IsSpecial(Index:  MetabaseSpecialObject ): Boolean;);Key;Link;LoadChildScreenshots(LoadChildScreenshots(Type:  ScreenshotType ););LocalCheckedOutFileNames;LocalFileName;LocalFileNames;LocalFolderName;Metabase;MoveTo(MoveTo(Dest:  IMetabaseObjectDescriptor ););Name;Names;Namespace_;Open(Open(Params:  IMetabaseObjectParamValues ):);OpenWithParam(OpenWithParam(Values: Variant):  IMetabaseObjectInstance ;);Params;Parent;ParentAllowed(ParentAllowed(Parent:  IMetabaseObjectDescriptor ):);SaveDescriptor;Screenshot(Screenshot(Type:);SecurityDescriptor;SetIdNoCheck(SetIdNoCheck(Id: String););Share;Shortcut;SourceParams;Timestamp;TrackElementDependencies;TrackElementDependents;UnShare;UndoCheckOut;UndoCheckOutEx(UndoCheckOutEx(Var ResId: Integer): Boolean;);UpdateTimestamp;VcsFileName;VcsFolderName
+Metabase	IMetabaseObjectDescriptors	interface	Add;Clear;Count;FindByKey(FindByKey(Key: Integer):  IMetabaseObjectDescriptor ;);IsEmpty;Item(Item(Index: Integer):  IMetabaseObjectDescriptor ;);Remove(Remove(Index: Integer): Boolean;);RemoveById(RemoveById(Id: String): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseObjectFindInfo	interface	Attribute;AttributeEx;CaseSensitive;ClassId;ScanHiddenFolders;ScanNestedNamespaces;Scope;Text;WholeWordsOnly
+Metabase	IMetabaseObjectHistory	interface	Count;Item(Item(Index: Integer):  IMetabaseObjectHistoryItem ;);Key
+Metabase	IMetabaseObjectHistoryItem	interface	ClassId;Comment;Description;Stamp;Station;UserName
+Metabase	IMetabaseObjectInstance	interface	Data;Flush;GetExtensionDispatch;InitControlledParams(InitControlledParams(ObjKey: Integer; ObjParams:);Key;Object;ParamValues;ThisObject
+Metabase	IMetabaseObjectInstanceCacheKeeper	interface	Cache(Cache(Key: Integer; ParamValues:  IMetabaseObjectParamValues ):);Clear(Clear([Key: Integer = -1]): Boolean;);Database;PieceSize;SaveDimensionCache(SaveDimensionCache(DimensionKey: Integer;);SplitBLOB;ZipCache
+Metabase	IMetabaseObjectName	interface	Description;IsDefault;Locale;Name
+Metabase	IMetabaseObjectNames	interface	Add(Add(Value:  LocaleCodeID ):);Count;FindByLocale(FindByLocale(Value:  LocaleCodeID ):);Item(Item(Index: Integer):  IMetabaseObjectName ;);Name(Name(Value:  LocaleCodeID ):);Remove(Remove(Value:  LocaleCodeID ):)
+Metabase	IMetabaseObjectParam	interface	Binding;DataType;DefaultValue;Object;Params;SharedParamLink
+Metabase	IMetabaseObjectParamBinding	interface	AsString
+Metabase	IMetabaseObjectParamControl	interface	ControlledParam;Expression
+Metabase	IMetabaseObjectParamLink	interface	ParamId;ReadWriteMode
+Metabase	IMetabaseObjectParamValue	interface	Binding;DataType;DefaultValue;IsArray;Value
+Metabase	IMetabaseObjectParamValues	interface	Count;CreateCopy;EqualTo(EqualTo(Values:  IMetabaseObjectParamValues ): Boolean;);FindById(FindById(Id: String):  IMetabaseObjectParamValue ;);FindByKey(FindByKey(Key: Integer):  IMetabaseObjectParamValue ;);Item(Item(Index: Integer):  IMetabaseObjectParamValue ;)
+Metabase	IMetabaseObjectParamValuesEx	interface	StateOptions
+Metabase	IMetabaseObjectParams	interface	Add;BeginUpdate;Clear;ControlInfo;Count;CreateEmptyValues;FindById(FindById(Id: String):  IMetabaseObjectParam ;);FindByKey(FindByKey(Key: Integer):  IMetabaseObjectParam ;);Item(Item(Index: Integer):  IMetabaseObjectParam ;);Move(Move(OldIndex: Integer, NewIndex: Integer););Object;Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseObjectParamsUpdate	interface	End
+Metabase	IMetabaseObjectSecurity	interface	AccessSecured;GetAccessSecurity(GetAccessSecurity(Options: Integer):  IAccessObjectSecurity ;)
+Metabase	IMetabaseOnBeforeLogonArgs	interface	AllowLogon;Credentials;Handled;Metabase;ResultMetabase
+Metabase	IMetabasePasswordPolicy	interface	CheckForbiddenStrings;CheckPassword(CheckPassword(User:  IMetabaseUser ;);ForbiddenStrings;HashedPasswords;HistoryLength;MaxAge;MaxRepeatedCharCount;MinAge;MinLength;NotAllowFullUserName;NotAllowUserName;RequireDifferentChars;RequireDifferentLetterCase;RequireDigitsAndChars;RequireNonAlphabeticChars;UniquenessDegree;WarningMaxAge
+Metabase	IMetabasePolicy	interface	ABACRules;AdmUserTitle(AdmUserTitle(Locale:  LocaleCodeID ;);AllowCreateUserGrant;AllowDeferredLoading;AllowUserQueries;AllowedDocumentFormats;AlwaysPrintDocumentLabel;AttributeBasedAccessControl;AuditClipboardOperations;AuditPolicy;AutoLockPeriod;AutoRun;Certificates;CheckUserPassword;CopyToClipboardAllowed;CreateDeferredSubjects;DiscretionaryAccessControl;ESKMode;EnforceApplicationRole;FailedLogonsCounter_ResetPeriod;ForceCleanMemory;IsObjectsIdFormatValid(IsObjectsIdFormatValid(ObjectIdFormat: String):);IsaPresent;LockIdentifiersPeriod;LogonHoursPolicy(LogonHoursPolicy(Subject:  ISecuritySubject ):);MandatoryAccess;MandatoryAccessControl;MaxFailedLogons;MethodsCombineAlgorithm;ObjectsAttributes;ObjectsIdFormat;PasswordPolicy;PredefinedPrivilege(PredefinedPrivilege(Predefined:  MetabasePolicyPredefinedPrivilege ):);PrintersPolicy;Privilege(Privilege(Name: String):    IPrivilege   ;);PrivilegeCount;PrivilegeName(PrivilegeName(Index: Integer): String;);PromoteToIsaMode(PromoteToIsaMode(Isa:  IMetabaseUser ;);ReportStamp(ReportStamp(Locale: LocaleCodeID ):);RestrictAdminAccess;RestrictGroupDeletion;RestrictIsaAccess;RestrictUserDeletion;RevertToStandardMode;RootObject;Security;StationsPolicy;SupportUserPrivateFolder;UserPrivateFolderRoot
+Metabase	IMetabaseSecurity	interface	ActiveUsers;AddGroup(AddGroup(GroupName: String):  IMetabaseGroup ;);AddNTSubject(AddNTSubject(Subject:  ISecuritySubject ):  ISecuritySubject ;);AddTemporaryUser(AddTemporaryUser(UserName: String, Period: Integer): IMetabaseUser ;);AddUser(AddUser(UserName: String):  IMetabaseUser ;);AllGroups;AllStations;AllUsers;Apply;ApplyWithInfo(ApplyWithInfo(InfoUserToUpdate:  IMetabaseUsersUpdate ):);CreateExporter;CreateUsersUpdate;CurrentDomainSubjectAddState(CurrentDomainSubjectAddState(Type:  SecuritySubjectType ):);EnvironmentAttributes;ExportUsersList(ExportUsersList(FileName:);Groups;HashPassword(HashPassword(Password:);LoadAuditLog(LoadAuditLog(FileName:);Metabase;MetabaseClassesSecurityDescriptors;Modified;NewSnapshot;NewSubjectsSearch;OpenAuditLog;Policy;RemoveSubject(RemoveSubject(Subj:  ISecuritySubject ):);ResolveName(ResolveName(SubjectName: String):  ISecuritySubject ;);ResolveSid(ResolveSid(Sid:);Revert;UpdateUsers(UpdateUsers(Value:  IMetabaseUsersUpdate ););Users
+Metabase	IMetabaseSecurityExporter	interface	ExportObjectsRights(ExportObjectsRights(Order:  MetabaseExportObjectsRightsOrder ););ExportPolicy;FileAppend;FileName
+Metabase	IMetabaseSecuritySubjectUpdateSetup	interface	Subject;UpdateType
+Metabase	IMetabaseUpdate	interface	AbacRulesNode;AccessAllowed;AllowReplaceSD;AlterType(AlterType(ClassId:);Apply(Apply([Progress:);ApplyEx(ApplyEx(Progress:  IMetabaseUpdateProgress ;);ApplyOptions;BoundType;Clear;Constraint;Copy(Copy(Options:  MetabaseUpdateCopyType ):);CreateUpdateContext;Description;EventsNode;FindAbacRulesNode;FindSpecialObjectsNode;IncludeAbacAttributes;LoadFromFile(LoadFromFile(FileName: String; [Mode:  UpdateLoadMode);LoadFromFileNF(LoadFromFileNF(FileName:);LocalCopy;MandatoryAccess;Metabase;Prepare;PrepareC(PrepareC(Context:);PriorDataLinkDependentsClear;Properties;ReflectObjectsRights;Refresh(Refresh([Progress:);RequireUserUpdateMessage;RootFolder;SaveAvailable(SaveAvailable (FileName: String;[Options:  MetabaseUpdateCopyType);SaveToFile(SaveToFile(FileName:);SaveToFileNF(SaveToFileNF(FileName:);SecurityConflictsLog;SpecialObjectsNode;Subjects;UpdateType;UseLocalVcsFiles
+Metabase	IMetabaseUpdateAbacRulesNode	interface	Add(Add(Object:  IABACEvaluatedObject ;);KeepActive;Root
+Metabase	IMetabaseUpdateAccessSubject	interface	AlternativeSid;Description;Name;RemappingSid;Sid
+Metabase	IMetabaseUpdateAccessSubjects	interface	Count;FindBySidString(FindBySidString(Sid: String):  IMetabaseUpdateAccessSubject ;);Item(Item(Index: Integer):  IMetabaseUpdateAccessSubject ;)
+Metabase	IMetabaseUpdateCommentNode	interface	Comment
+Metabase	IMetabaseUpdateContext	interface	KeyMap;RegisteStrChange(RegisterStrChange(OldStr: String; NewStr: String););RegisterAttributeIdChange(RegisterAttributeIdChange();RegisterHierarchyChange(RegisterHierarchyChange();RegisterHierarchyChangeO(RegisterHierarchyChangeO();RegisterIdChange(RegisterIdChange(ClassId: Integer; OldId: String; NewId: String; newObject:  IMetabaseObject ););RegisterKeyChange(RegisterKeyChange();RegisterKeyChangeO(RegisterKeyChangeO();RegisterNullRemapping(RegisterNullRemapping(OldKey: Integer););RegisterNullRemappingO(RegisterNullRemappingO(OwnObject: Integer; OldKey:)
+Metabase	IMetabaseUpdateDataObjectNode	interface	AllowExistingRubricatorUpdate;BatchMode;FieldsOnly;IsIdentity;Method;PrimaryKey;PrimaryKeysOnly;ReferenceConstraintsHandling;RequestAdminCredentials;UpdateRdsSequence
+Metabase	IMetabaseUpdateDeleteObjectNode	interface	Object;ObjectClass;ObjectId;ObjectKey
+Metabase	IMetabaseUpdateFolderNode	interface	Add(Add(NodeType:  MetabaseUpdateNodeType ):);Count;FindByKey(FindByKey(Key: Integer):  IMetabaseUpdateNode ;);FindObject(FindObject(ObjKey: Integer):  IMetabaseUpdateObjectNode ;);Item(Item(Index: Integer):  IMetabaseUpdateNode ;);MoveNode(MoveNode (Index: Integer, Parent:  IMetabaseUpdateFolderNode , InsertAt: Integer););Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);Sort(Sort(Mode:  UpdateSortMode );)
+Metabase	IMetabaseUpdateKeyMap	interface	Count;FindByNewKey(FindByNewKey(Key: Integer):  IMetabaseUpdateObjectRemapping ;);FindByOldId(FindByOldId(ClassId: Integer; Id: String):  IMetabaseUpdateObjectRemapping ;);FindByOldKey(FindByOldKey(Key: Integer):  IMetabaseUpdateObjectRemapping ;);IsEmpty;Item(Item(Index: Integer):  IMetabaseUpdateObjectRemapping ;);Remove(Remove(Index: Integer): Boolean;)
+Metabase	IMetabaseUpdateMandatoryAccess	interface	Category;CategoryCount;IsValid
+Metabase	IMetabaseUpdateNode	interface	AccessAllowed(AccessAllowed([accesstype:  MetabaseUpdateCopyType);Condition;Enabled;Index;Key;Label;NodeType;ParentNode;Prepare
+Metabase	IMetabaseUpdateNullLink	interface	ClassId;Description;Id;Key;Name
+Metabase	IMetabaseUpdateNullLinks	interface	Count;Item(Item(Index: Integer):  IMetabaseUpdateNullLink ;)
+Metabase	IMetabaseUpdateObject	interface	ReadUpdate(ReadUpdate(Update:  IMetabaseUpdate ;);WriteUpdate(WriteUpdate(Update:  IMetabaseUpdate ;)
+Metabase	IMetabaseUpdateObjectApplyState	interface	ApplyAfterParent;ConflictObject;CreatedObject;ForceParent;ForceUpdateObject;ForceUpdateVcs;State;UpdateObject
+Metabase	IMetabaseUpdateObjectExParams	interface	
+Metabase	IMetabaseUpdateObjectNode	interface	AccessToken;AccessTokenOptions;Acl;AlterType;ApplyState;BoundType;Constraint;ExtendedParams;ForceKeepId;ForceUniqueId;IncludeChildrenDependencies;IncludeData;IncludeScreenshot;IsUnderUpdateRoot;KeepNativeNames;Object;ObjectId;ObjectName;ObjectOldKey;Parent;SDApplyLog;UnboundType;UpdateOrder;UpdatePart;UpdateType
+Metabase	IMetabaseUpdateObjectRemapping	interface	ClassId;HasMultiValues;Map(Map(Type:  MetabaseUpdateRemappingType ):);NullRemapping;Object
+Metabase	IMetabaseUpdateProgress	interface	OnAfterApplyCustomObject(OnBeforeCustomObjectSaveToPef(Resolver:  ICustomObjectResolver ););OnAskConstraintsHandling(OnAskConstraintsHandling();OnAskReflectRights(OnAskReflectRights(Var Cancel: Boolean););OnBeforeCustomObjectSaveToPef(OnBeforeCustomObjectSaveToPef(Resolver:  ICustomObjectResolver ););OnContext(OnContext(Context:  IMetabaseUpdateContext ););OnError(OnError(Data:  IMetabaseUpdateProgressData ;);OnNullLinks(OnNullLinks(Node:  IMetabaseUpdateNode ;);OnProgress(OnProgress(Data:  IMetabaseUpdateProgressData ););OnResolve(OnResolve(Node:  IMetabaseUpdateNode ;);OnSkip(OnSkip(Data:  IMetabaseUpdateProgressData );)
+Metabase	IMetabaseUpdateProgressData	interface	Current;Error;Node;Object;Stage;Total
+Metabase	IMetabaseUpdateProperties	interface	Add;Count;FindById(FindById(Id: String):  IMetabaseUpdateProperty ;);FindByKey(FindByKey(Key: Integer):  IMetabaseUpdateProperty ;);Item(Item(Index: Integer):  IMetabaseUpdateProperty ;);Move(Move(IndexFrom: Integer; IndexTo: Integer););Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Metabase	IMetabaseUpdateProperty	interface	DataType;Value
+Metabase	IMetabaseUpdateRemapping	interface	NewId;NewKey;OldId;OldKey;Type
+Metabase	IMetabaseUpdateRemappings	interface	Count;FindByNewKey(FindByNewKey(Key: Integer):  IMetabaseUpdateRemapping ;);FindByOldId(FindByOldId(ClassId: Integer; Id: String):  IMetabaseUpdateRemapping ;);FindByOldKey(FindByOldKey(Key: Integer):  IMetabaseUpdateRemapping ;);IsEmpty;Item(Item(Index: Integer):  IMetabaseUpdateRemapping ;);Type
+Metabase	IMetabaseUpdateResolver	interface	Count;Item(Item(Index: Integer):  IMetabaseUpdateUnresolved ;)
+Metabase	IMetabaseUpdateSecurityCategory	interface	Exists;FindLevelByLabel(FindLevelByLabel(CriticalityLabel: Integer): IMetabaseUpdateSecurityLevel ;);IsValid;Key;Level(Level(Index: Integer): IMetabaseUpdateSecurityLevel ;);LevelCount;Name
+Metabase	IMetabaseUpdateSecurityLevel	interface	Category;CriticalityLabel;Description;Exists;Index;IsValid;Name
+Metabase	IMetabaseUpdateSecuritySubjectNode	interface	Subject
+Metabase	IMetabaseUpdateSpecialObjectsNode	interface	ApplyObject(ApplyObject(Index:  MetabaseSpecialObject ):);ObjectNode(ObjectNode(Index:  MetabaseSpecialObject ):)
+Metabase	IMetabaseUpdateSqlNode	interface	ClearSql;Database;DatabaseNode;IgnoreErrors;IsDatabaseValid;SetDefaultSql(SetDefaultSql(Value: String););Sql(Sql(Driver: String): String;)
+Metabase	IMetabaseUpdateUnresolved	interface	ClassId;Description;Id;IsRequired;KeepResolve;Key;Name;ResolveObject
+Metabase	IMetabaseUpdateUserEvents	interface	OnAskConstraintsHandling(OnAskConstraintsHandling();OnAskReflectRights(OnAskReflectRights(Var Cancel: Boolean););OnBeforeApplyUpdate(OnBeforeApplyUpdate(Update:  IMetabaseUpdate ););OnBeginUpdate(OnBeginUpdate(Update:  IMetabaseUpdate ););OnEndUpdate(OnEndUpdate(Update:  IMetabaseUpdate ););OnUpdateObject(OnUpdateObject(Update:  IMetabaseUpdate ;)
+Metabase	IMetabaseUser	interface	Attributes;AutoRun;CannotChangePassword;Certificate;EternalPassword;External;FullName;GetEffectiveRights(GetEffectiveRights(SecurityDescriptor:  ISecurityDescriptor ):);HasAccess(HasAccess(SecurityDescriptor:  ISecurityDescriptor ;);InitCertificate(InitCertificate(StorageType:  CertificateStorageType ););IsAdmin;IsDeferred;IsIsa;IsLocked;IsTemporary;LastLoginStamp;LockedState;ManageDBGrants;MaxLogonSessions;MustChangePasswordAtNextLogon;PackageData;PasswordChangedUser;Printers;Profile;ShortName;StationIPs;StationMACs;Stations;TemporaryAge;Token
+Metabase	IMetabaseUsers	interface	Administrator;Attributes;Count;Isa;Item(Item(Index: Index):  IMetabaseUser ;)
+Metabase	IMetabaseUsersUpdate	interface	Add(Add(Value:  IMetabaseUser ););AddGroupUsers(AddGroupUsers(Value:  IMetabaseGroup ;);AddSubject(AddSubject(Value:  ISecuritySubject ;);Callback;Errors;ItemSetup(ItemSetup(Index: Integer):  IMetabaseSecuritySubjectUpdateSetup ;)
+Metabase	IMetabaseUsersUpdateCallback	interface	CallbackResult;Process(Process(Subject:  ISecuritySubject ););RequestAction(RequestAction(Error:  IMetabaseUsersUpdateError ):)
+Metabase	IMetabaseUsersUpdateError	interface	DetailText;Message;SecuritySubject;Type
+Metabase	IMetabaseUsersUpdateErrors	interface	Count;Item(Item(Index: Integer):  IMetabaseUsersUpdateError ;);SaveToFile(SaveToFile(FileName: String; Unicode: Boolean;))
+Metabase	IModule	interface	Assembly;Modified;ParentAssembly;Standalone;Text
+Metabase	IMsSqlUserSPUD	interface	
+Metabase	INamedEntity	interface	Id;Key;Name
+Metabase	IObjectCheckOutInfo	interface	Count;Item(Item(Index: Integer):  IObjectCheckOutInfoUser ;)
+Metabase	IObjectCheckOutInfoUser	interface	Comment;MachineName;Stamp;UserName
+Metabase	IOperationCallback	interface	OnOperation(OnOperation(Operation: Integer; O1: Variant; O2:)
+Metabase	IOracleUserSPUD	interface	DefaultTablespace;TemporaryTablespace
+Metabase	IPasswordCredentials	interface	Password;UserName
+Metabase	IPostgresUserSPUD	interface	
+Metabase	IPrimaryMsSqlODBCSPLD	interface	ODBCParamCount;ODBCParamName(ODBCParamName(Index: Integer): String;);ODBCParamValue(ODBCParamValue(Name: String): Variant;)
+Metabase	IPrimaryMsSqlSPLD	interface	Database;DatabaseOnly;FileGroup;SchemaOnly;Server
+Metabase	IPrimaryODBCSPLD	interface	ODBCParamCount;ODBCParamName(ODBCParamName(Index: Integer): String;);ODBCParamValue(ODBCParamValue(Name: String): Variant;);ODBCParams
+Metabase	IPrimaryOracleSPLD	interface	OsAuthentPrefix;Scheme;Server
+Metabase	IPrimaryPostgresSPLD	interface	CaseSensitive;Database;KrbSrvName;Server;SupportBinaryProtocol;UseGssApi
+Metabase	IPrimarySQLiteSPLD	interface	FileName
+Metabase	IPrimaryServiceSPLD	interface	Endpoint;Metabase;OriginLogonData
+Metabase	IPrivilege	interface	Description;Grant(Grant(Subject:  ISecuritySubject ););Holder(Holder(Index: Integer):  ISecuritySubject ;);HolderCount;Name;Predefined;Revoke(Revoke(Subject:  ISecuritySubject ););SubjectGranted(SubjectGranted(Subject:  ISecuritySubject ):)
+Metabase	ISQLiteUserSPUD	interface	
+Metabase	IScPack	interface	Package
+Metabase	IScPacks	interface	Count;FindById(FindById(Id: String):  IScPack ;);Item(Item(Index: Integer):  IScPack ;)
+Metabase	ISearchEngineServiceBase	interface	LoadFromXml(LoadFromXml(Reader: Variant););Metabase;SaveToXml(SaveToXml(Writer: Variant);)
+Metabase	ISearchEngineServiceFactory	interface	CreateSearchEngine(CreateSearchEngine(pMetabase:  IMetabase ):)
+Metabase	ISecurityCategory	interface	AddLevel(AddLevel(CriticalityLabel: Integer; Name: String):);FindLevelByLabel(FindLevelByLabel(CriticalityLabel: Integer):);Hierarchical;Key;Level(Level(Index: Integer):  ISecurityLevel ;);LevelCount;Name;RemoveLevel(RemoveLevel(Index: Integer): Boolean;)
+Metabase	ISecurityConnection	interface	Columns(Columns(TableName: String): IDalColumns;);CreateCommand(CreateCommand(Sql: String): IDalCommand;);DbObject(DbObject(Value: String): String;);Discover(Discover(SystemDictionary:  DalSystemDictionary ;);Driver;InTransaction;Indexes(Indexes(TableName: String):  IDalIndexses ;);IsDisconnected;LogonData;OpenSame;Procedures(Procedures(ProcedureName: String):  IDalProcedures ;);SingleUserMode;StartTransaction(StartTransaction(AutoCommit: Boolean):  IConnectionTransaction ;);Tables(Tables(Value: String):  IDalTables ;);Triggers(Triggers(TableName: String):   IDalTriggers  ;);UserIsAdmin;UserIsNT;UserNameDb;UserNameLo;UserSid;Views(Views(Value: String):  IDalViews ;)
+Metabase	ISecurityConnection2	interface	Clone(Clone(Type :  DalConnectionType ):  ISecurityConnection ;);SupportsConnectionType(SupportsConnectionType(Type: DalConnectionType ): Boolean;);Type
+Metabase	ISecurityConnection3	interface	InitExecuteSetup
+Metabase	ISecurityDescriptor	interface	AccessSecured;AccessToken;Acl;Apply(Apply(ApplyByHierarchy: Boolean););ApplyO(ApplyO(Options:  SecurityDescriptorApplyFlags ););Edit;Flags;GetEffectiveRights(GetEffectiveRights(Subject:  ISecuritySubject ):);GetEffectiveRightsAudit(GetEffectiveRightsAudit(Subject:  ISecuritySubject ;);GetEffectiveRightsAuditLabel(GetEffectiveRightsAuditLabel();HasAccess(HasAccess(Subject:  ISecuritySubject ;);HasAccessAudit(HasAccessAudit(Subject:  ISecuritySubject ;);HasAccessAuditLabel(HasAccessAuditLabel();HasAccessMandatory;LabelSecurity;Revert
+Metabase	ISecurityDocumentLabel	interface	IsON;Label;LabelDescription;Metabase;TreatSectionAsDocument;User
+Metabase	ISecurityLabels	interface	BitCount;Mapping(Mapping(BitIndex: Integer):  ISecuritySubject ;);Value(Value([Subject:  ISecuritySubject);ValueStr(ValueStr([Subject:  ISecuritySubject)
+Metabase	ISecurityLevel	interface	Category;CriticalityLabel;Description;ExportAllowed;Index;Marking;Name;PrintAllowed;TreatSectionAsDocument
+Metabase	ISecurityPackage	interface	CertProvider;CopyCredentials(CopyCredentials(Value:  ICredentials ):);CreateCredentials(CreateCredentials(Authentication:  AuthenticationMode ):);CreateLogonData(CreateLogonData(DriverName: String):  ISecurityPackageLogonData ;);GetAdminCredentials(GetAdminCredentials();Id;IsCompatibleDriver(IsCompatibleDriver(DriverName: String): Boolean;);Name;PerformLogon(PerformLogon();SupportsAuthentication(SupportsAuthentication(Authentication:  AuthenticationMode ):)
+Metabase	ISecurityPackageLogonData	interface	Clone;DbObjectO(DbObjectO (Value: String; [Options: Integer = 0]): String;);IsUnicode;LogonEvent;ParamCount;ParamName(ParamName(Index: Integer): String;);ParamValue(ParamValue(ParamName: String):  Variant ;);Unicode;Valid
+Metabase	ISecurityPackageLogonDataEx	interface	IsLocal(IsLocal(Index: Integer): Boolean;);IsRequired(IsRequired(Index: Integer): Boolean;);ParamCountEx;ParamDescription(ParamDescription(Index: Integer): String;);ParamIndex(ParamIndex(ParamName: String): Integer;);ServiceLogon;ServiceLogonData
+Metabase	ISecurityPackageUserData	interface	AllPrivilegies;Authentication;Credentials;HasPrivilege(HasPrivilege(Priv:  SecurityPackageUserPrivilege ):);IsGroup;Modified;ParamCount;ParamName(ParamName(Index: Integer): String;);ParamValue(ParamValue(Name: String): Variant;);UserName
+Metabase	ISecuritySnapshot	interface	ApplyFromFile(ApplyFromFile(FileName: String, [CallBack:  ISecuritySnapshotCallback);Log;Metabase;SaveToFile(SaveToFile(FileName: String);)
+Metabase	ISecuritySnapshotCallback	interface	OnOperation(OnOperation(ApplyOperation:  SnapshotApplyOperationType ;);OnSubjectApply(OnSubjectApply(ApplyState:  ApplyStateType ;)
+Metabase	ISecuritySnapshotLog	interface	ApplyState;Message;SubjectName;SubjectType
+Metabase	ISecuritySubject	interface	Description;DistinguishedName;HasAccessToRepository;IsHidden;IsNT;LogonHoursPolicy;MemberOf;MemberOfO(MemberOfO(Options: Integer):  IMetabaseGroups ;);Name;Sid;Tag;Type;UserPrincipalName
+Metabase	ISecuritySubjects	interface	Count;Item(Item(Index: Integer):  ISecuritySubject ;)
+Metabase	ISecuritySubjectsSearch	interface	AbandonSearch;AreaIncludeDB;AreaIncludeMetabaseNT;AreaIncludeNT;DomainCredentials;DomainSelectCriteria;ExecuteSearch;NameCriteria;ProtocolSelectCriteria;SubjectCriteria(SubjectCriteria(Type:  SecuritySubjectType ):);Subjects
+Metabase	ISid	interface	AsString;Valid
+Metabase	ISidEx	interface	IsDeferred
+Metabase	ISpecialObjects	interface	Operation(Operation();SpecialObject(SpecialObject(Index:  MetabaseSpecialObject ):  IMetabaseObjectDescriptor ;);VcsParams
+Metabase	IStation	interface	Access;Comment;Domain;FullName;Included;IsAllowed;Name
+Metabase	IStations	interface	Access;Count;Domains;FindByName(FindByName(Name: String):  IStation ;);Item(Item(Index: Integer):  IStation ;);Refresh
+Metabase	IStringFilterCondition	interface	CaseSensitive;IsON;Value;WholeWordsOnly
+Metabase	ISysLogSettings	interface	IsActive;Port;Protocol;Save;Scope;Server
+Metabase	IUserEmail	interface	Email;IsDefault;Name;SetDefault
+Metabase	IUserEmails	interface	Add(Add(Name: String; Email: String):  IUserEmail ;);Count;Item(Item(Index: Integer):  IUserEmail ;);Mobile;Personal;Remove(Remove(Index: Integer); Boolean;);Working
+Metabase	IUserProfile	interface	Apply;Edit;Email;Emails;Name;PrivateFolder;Prop(Prop(PropName: String): Variant;);Properties;StringSid;User
+Metabase	IUserProfileProperties	interface	Add(Add(Name: String; Value: Variant):  IUserProfileProperty ;);Count;Item(Item(Index: Integer):  IUserProfileProperty ;);Remove(Remove(Index: Integer): Boolean;)
+Metabase	IUserProfileProperty	interface	Name;Value
+Metabase	IUserProfiles	interface	Add(Add(User:  IMetabaseUser ):);AddStr(AddStr(StrSid: String; Name: String):  IUserProfile ;);Count;FindByStrSid(FindByStrSid(StrSid: String):  IUserProfile ;);Item(Item(Index: Integer):  IUserProfile ;);Remove(Remove(Index: Integer): Boolean;);RemoveByStrSid(RemoveByStrSid(StrSid: String): Boolean;)
+Metabase	IVcsParams	interface	AuxPathLabel;AuxProjPath;IsShared;ProjName;SccName
+Metabase	IsaModePromoteOptions	enum	
+Metabase	MDCalcSpecificRights	enum	
+Metabase	MbElementDependenciesTrackingType	enum	
+Metabase	MbElementDependencyTemplateClass	class	Create(Create(ObjectKey: Integer; DictionaryKey: Integer;);CreateByDictionary(CreateByDictionary(DictionaryKey: Integer););CreateByElement(CreateByElement(DictionaryKey: Integer; ElementKey:);CreateByObject(CreateByObject(ObjectKey: Integer);)
+Metabase	MbElementDependentTemplateClass	class	Create(Create(ObjectKey: Integer; DictionaryKey:);CreateByDictionary(CreateByDictionary(DictionaryKey: Integer););CreateByElement(CreateByElement(DictionaryKey: Integer;);CreateByObject(CreateByObject(ObjectKey: Integer);)
+Metabase	MetabaseCheckStatus	enum	
+Metabase	MetabaseClass	class	
+Metabase	MetabaseCustomForeEvent	class	Create(Create(Id: String);)
+Metabase	MetabaseDefinitionScope	enum	
+Metabase	MetabaseExportObjectsRightsOrder	enum	
+Metabase	MetabaseFetchOptions	enum	
+Metabase	MetabaseLogonEvents	class	
+Metabase	MetabaseManagerFactory	class	
+Metabase	MetabaseObjectAlterType	enum	
+Metabase	MetabaseObjectAuditOperationState	enum	
+Metabase	MetabaseObjectCachingMode	enum	
+Metabase	MetabaseObjectClass	enum	
+Metabase	MetabaseObjectMetaclass	enum	
+Metabase	MetabaseObjectOperation	enum	
+Metabase	MetabaseObjectParamReadWriteMode	enum	
+Metabase	MetabaseObjectPredefinedRights	enum	
+Metabase	MetabaseObjectUpdateBoundType	enum	
+Metabase	MetabaseObjectUpdateConstraint	enum	
+Metabase	MetabaseObjectUpdateOrder	enum	
+Metabase	MetabaseObjectUpdatePart	enum	
+Metabase	MetabaseObjectUpdateType	enum	
+Metabase	MetabaseObjectUpdateUnboundType	enum	
+Metabase	MetabasePolicyPredefinedPrivilege	enum	
+Metabase	MetabaseRefreshOptions	enum	
+Metabase	MetabaseSecurityApplyInformation	enum	
+Metabase	MetabaseSecuritySubjectUpdateType	enum	
+Metabase	MetabaseSid	class	
+Metabase	MetabaseSpecialObject	enum	
+Metabase	MetabaseUpdateAccessTokenOptions	enum	
+Metabase	MetabaseUpdateAccessType	enum	
+Metabase	MetabaseUpdateApplyOptions	enum	
+Metabase	MetabaseUpdateCopyType	enum	
+Metabase	MetabaseUpdateMethod	enum	
+Metabase	MetabaseUpdateNodeAccessType	enum	
+Metabase	MetabaseUpdateNodeType	enum	
+Metabase	MetabaseUpdateObjectApplyState	enum	
+Metabase	MetabaseUpdateProgressStage	enum	
+Metabase	MetabaseUpdateRemappingType	enum	
+Metabase	MetabaseUserLockedState	enum	
+Metabase	MetabaseUsersUpdateCallbackResult	enum	
+Metabase	MetabaseUsersUpdateErrorType	enum	
+Metabase	NameCasePlural	enum	
+Metabase	ObjectUpdateDataBatchMode	enum	
+Metabase	OperationCallback	class	
+Metabase	ProblemSpecificRights	enum	
+Metabase	ProcedureSpecificRights	enum	
+Metabase	ProtocolSelectType	enum	
+Metabase	ScenarioDimensionSpecificRights	enum	
+Metabase	ScheduledTaskSpecificRights	enum	
+Metabase	ScreenshotType	enum	
+Metabase	SecurityDescriptorApplyFlags	enum	
+Metabase	SecurityDescriptorFlags	enum	
+Metabase	SecurityPackageUserPrivilege	enum	
+Metabase	SecuritySnapshotCallback	class	
+Metabase	SecuritySpecificRights	enum	
+Metabase	SecuritySubjectLocation	enum	
+Metabase	SecuritySubjectMemberOfO	enum	
+Metabase	SecuritySubjectType	enum	
+Metabase	SnapshotApplyOperationType	enum	
+Metabase	StandardSecurityPackage	class	
+Metabase	StationAccessType	enum	
+Metabase	SysLogSettings	class	
+Metabase	SysLogSettingsScope	enum	
+Metabase	TableSpecificRights	enum	
+Metabase	UpdateDataConstraintsHandlingType	enum	
+Metabase	UpdateEvents	class	
+Metabase	UpdateLoadMode	enum	
+Metabase	UpdateObjectSpecificRights	enum	
+Metabase	UpdateProgress	class	
+Metabase	UpdateReflectObjectsRightsType	enum	
+Metabase	UpdateSortMode	enum	
+Metabase	ValidationSpecificRights	enum	
+Net	INetMailAddress	interface	
+Net	INetMailMessage	interface	
+Net	INetSmtpClient	interface	
+Reports	GetDataAreaHintArgs	class	
+Reports	ICalculateReportScheduledTask	interface	FormatTag;GetExportSettings(GetExportSettings(Exporter:  IPrxReportExporter ););Printer;PutExportSettings(PutExportSettings(Exporter:  IPrxReportExporter ););ReadResult(ReadResult(TaskResult: IScheduledTaskResult;);SourceReport
+Reports	IGetDataAreaHintArgs	interface	Text
+Reports	IPrxAssemblies	interface	Add(Add(Assembly:  IMetabaseObjectDescriptor ):);AddEx(AddEx(Assembly:  IMetabaseObjectDescriptor ,);Clear;Count;Edit;EventsAssembly;EventsClass;Item(Item(Index: Integer): IMetabaseObjectDescriptor;);Method(Method(Index: Integer):  PamAssemblyMethod ;);Remove(Remove(Index: Integer): Boolean;);Report;Revert;Save
+Reports	IPrxBulkSelection	interface	Control;Selection
+Reports	IPrxBulkSelectionSet	interface	Add(Add(Value:  IPrxControl ):);Clear;Count;Item(Item(Index: Integer):  IPrxBulkSelection ;);Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxBulkSettings	interface	FilesMapping;SelectionSet
+Reports	IPrxCellStyle	interface	IsDefault;IsSet
+Reports	IPrxChart	interface	AutoAdjust;BeginUpdate;Data;DataRange;DoSerieClick(DoSerieClick(SerieIndex: Integer; [PointIndex: Integer);EaxChart;EndUpdate;ExcludedPoints;IncludeHidden;Name;PointChartMode;PointNameByIndex(PointNameByIndex:(PointIndex: Integer):String;);Points;PointsRange;PointsSimple;SerieAction;Series;SeriesFormatted;SeriesInRows;SeriesRange;SeriesSimple;Sheet;Slice;SourceType;UndoRedo
+Reports	IPrxChartDataAdapter	interface	
+Reports	IPrxChartLegend	interface	UndoRedo
+Reports	IPrxControl	interface	Appearance;AutoRecalc;Binding;ControlledBy;Dimension;RecalcOnChange;RecalcSliceOnly;Recreate;Selection;SetValueC(SetValueC(Value: Variant; [Context:  IPrxReportRecalcContext);Value;Width
+Reports	IPrxControlAppearance	interface	Report;Sheet(Sheet(Sheet:  IPrxSheet ):);SheetRecalc(SheetRecalc(Sheet:  IPrxSheet ):);SpecificRecalc
+Reports	IPrxControls	interface	Count;FindById(FindById(Id: String):  IPrxControl ;);FindByKey(FindByKey(Key: Integer):  IPrxControl ;);IndexOf(IndexOf(Value:  IPrxControl ):);Item(Item(Index: Integer):  IPrxControl ;);Move(Move(OldIndex: Integer; NewIndex: Integer);)
+Reports	IPrxDataAdapter	interface	Consumer;Slice
+Reports	IPrxDataAdapterManager	interface	CreateRangeMapDataAdapter(CreateRangeMapDataAdapter(AdapterType:  PrxMapAdapter ;);CreateSliceMapDataAdapter(CreateSliceMapDataAdapter(AdapterType:  PrxMapAdapter ;)
+Reports	IPrxDataCache	interface	FlushDataCache;UseDataCache
+Reports	IPrxDataChange	interface	
+Reports	IPrxDataElementStyle	interface	Modified
+Reports	IPrxDataElementStyleCommon	interface	Data;DataIslandLevel;FormatConditions;Header
+Reports	IPrxDataIsland	interface	AdjustMode;BeginDrill;Copy(Copy([Sheet:  IPrxSheet);DataIslands;DataRange;DataSourceTotalsDefined;Edit;GetRecentChanges;IsDrillAllowed;MarkAllDataAsChanged;OutputPart;OutputRange;Properties;Range;ReadOnly;Recalc;Report;Revert;Save;Sheet;Slice
+Reports	IPrxDataIslandCorner	interface	Formula;Merge;Properties;Style
+Reports	IPrxDataIslandDimension	interface	CustomLayout;DataIslandProperties;ExpanderPosition;HierarchyPosition;Layout;Level(Level(Level: IDimLevel):);ListNodes;Sort
+Reports	IPrxDataIslandDimensionCommon	interface	Drill;Drilled;IsDrilled;Naming(Naming(Index: Integer):  IPrxDataIslandNaming ;);NamingCount;Style
+Reports	IPrxDataIslandDimensionLayout	interface	Build(Build(Selection:  IDimSelection ););CreateFormulaParser;Edit;MergeWithSelection;PreserveDimensionElementsOrder;Save
+Reports	IPrxDataIslandDimensionLayoutFormulaParser	interface	AddTerm;ClearTerms;Formula;Layout;Node;Parse(Parse(Formula: String););Term(Term(Index: Integer): String;);TermCount;TermElementID(TermElementID(Term: String): String;);TermNodeKey(TermNodeKey(Term: String): Integer;);TermText(TermText(Term: String): String;);TermType(TermType(Term: String):  LayoutFormulaTermType ;)
+Reports	IPrxDataIslandDimensionLayoutNode	interface	Caption;Children;DimElement(DimElement(Instance: IDimInstance):);ElementStyle;Formula;Include;IsDimElement;Key;MoveTo(MoveTo(Node:  IPrxDataIslandDimensionLayoutNode ;)
+Reports	IPrxDataIslandDimensionLayoutNodes	interface	Add;Clear;Count;FindByKey(FindByKey(Key: Integer):  IPrxDataIslandDimensionLayoutNode ;);Item(Item(Index: Integer):  IPrxDataIslandDimensionLayoutNode ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(NodeKey: Integer): Boolean;)
+Reports	IPrxDataIslandDimensionSort	interface	Attribute;ColumnRowIndex;DataIslandDimension;Descending;Element(Element(Dim:  IDimInstance ):);Enabled;Filter;Kind;Method;UseActualColumnIndex
+Reports	IPrxDataIslandHeader	interface	Behaviour;CanFitTo(CanFitTo(DataIsland:  IPrxDataIslandProperties ):);Disposition;Filter;FitTo;HierarchyIndent;KeepParentCells;KeepParentNodes;Numbering;Placement;Properties;Sort;StairsHierarchy;Style
+Reports	IPrxDataIslandHeaderCommon	interface	AutoIndent;ChildrenBeforeParents;DuplicateParent;Hierarchical;HierarchyTotals;IsAutoIndent;IsChildrenBeforeParents;IsHierarchical;IsParentDuplicated;IsSeparated;LevelTotals;Separated
+Reports	IPrxDataIslandHeaderFilter	interface	Condition;DataIslandHeader;DimensionFilter(DimensionFilter(Dimension: IDimensionModel):);Selection;SuppressEmpty;SuppressNotNumber;SuppressZero;UseCondition;UseSelection
+Reports	IPrxDataIslandLevel	interface	DataIslandDimension
+Reports	IPrxDataIslandNaming	interface	AutoIndent;Expression;IsAutoIndent;PlaceArrangement;Placement;Style
+Reports	IPrxDataIslandNumbering	interface	Dimension(Dimension: (Dimension:  IPrxDataIslandDimension ): IPrxDataIslandNumberingLevel ;);IsCrossDimension;IsOn;Level(Level:(Level: IPrxDataIslandLevel ): IPrxDataIslandNumberingLevel ;);Naming
+Reports	IPrxDataIslandNumberingLevel	interface	IncludeTotals;IsOn;Style;Type
+Reports	IPrxDataIslandProperties	interface	Corner;DataIsland;Dimension(Dimension(Dimension:  IDimensionModel ):);FormatConditions;HierarchyIndent;LeftHeader;ModifiedStyle;Style;TableStyle;TopHeader
+Reports	IPrxDataIslandTotals		HasOthers;HasTotals;Method;MethodFromDataSource;MethodValue;Others;Style;Totals;UseMethodFromDataSource
+Reports	IPrxDataIslands	interface	Add;Clear;Count;FindById(FindById(Id: String):  IPrxDataIsland ;);FindByKey(FindByKey(Key: Integer):  IPrxDataIsland ;);Item(Item(Index: Integer):  IPrxDataIsland ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);Report
+Reports	IPrxDataSource	interface	DataObject;DataSource;DataSources;IsCached;Parent;Refresh(Refresh(Dimension:  IMetabaseObjectDescriptor ;);Slices;UpdateNameOnOpen
+Reports	IPrxDataSources	interface	Add(Add(Value: IMatrixDataSource):);AddEx(AddEx(Value:  IMetabaseObjectDescriptor ););Clear;Count;FindById(FindById(Id: String):  IPrxDataSource ;);FindByKey(FindByKey(Key: Integer):  IPrxDataSource ;);Item(Item(Index: Integer):  IPrxDataSource ;);Remove(Remove(Index: Integer): Boolean;);Report
+Reports	IPrxDimensionDrill	interface	Action;ActionType;Attribute;Attributes;Condition;Dimension;Index;Mode;Sheet;Target
+Reports	IPrxDrillCellResult	interface	Column;Coord;DataSource;Drill(Drill(Row: Integer; Column: Integer): Boolean;);Row;Selection;Sheet;Slice
+Reports	IPrxFlowDocument	interface	UndoRedo
+Reports	IPrxFormatConditions	interface	IsDefault;IsSet
+Reports	IPrxFormulaIsland	interface	Copy(Copy([Sheet:  IPrxSheet);Edit;Formula;FormulaIslands;Origin;Range;Recalc(Recalc(););Revert;Save;Sheet;Style
+Reports	IPrxFormulaIslands	interface	Add;Clear;Count;FindById(FindById(Id: String):  IPrxFormulaIsland ;);FindByKey(FindByKey(Key: Integer):  IPrxFormulaIsland ;);Item(Item(Index: Integer):  IPrxFormulaIsland ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);Report
+Reports	IPrxJsPlugin	interface	PluginId
+Reports	IPrxMap	interface	AdviseAdapter(AdviseAdapter(Value:  IPrxMapDataAdapter ););AreaAction;AutoScaled;DoAreaAction(DoAreaAction(Argument: Variant););OriginalTopobase;SpecificXML
+Reports	IPrxMapDataAdapter	interface	AdapterDataType;AdapterType;Attribute;DataRange;Dimension;Expression;Expression2;IdRange;Index;Sheet
+Reports	IPrxMapLegend	interface	Map
+Reports	IPrxMapScale	interface	Id;MapScale
+Reports	IPrxMapScales	interface	Add(Add(Scale:  PrxMapScale ):);Clear;Count;FindById(FindById(Id: String):  IPrxMapScale ;);Item(Item(Index: Integer):  IPrxMapScale ;);Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxMapTerritoryInfo	interface	Map
+Reports	IPrxOldObject	interface	
+Reports	IPrxPageSettings	interface	StartPageNumber;UseSheetPageCount
+Reports	IPrxPartialPersist	interface	LoadFromStream(LoadFromStream(Options: Integer; Stream:  IIOStream ););SaveToStream(SaveToStream(Options: Integer; Stream:  IIOStream );)
+Reports	IPrxPicture	interface	AutoSize;Center;Image;Proportional;Stretch
+Reports	IPrxRange	interface	Range;Sheet
+Reports	IPrxReport	interface	ActiveSheet;AddEventHandler(AddEventHandler(Events:  IPrxReportUserEvents ):);Assemblies;BeginRecalc;Controls;CopyFrom(CopyFrom(Source:  IPrxReport ););CopyFromEx(CopyFromEx(Source:  IPrxReport ););CreateRecalcContext;DataArea;DataIslands;DataSources;DelayedLoad;EnableNewPage;FormulaIslands;GetBulkSelectionSet(GetBulkSelectionSet(Range: String):  IPrxBulkSelectionSet ;);HasEventHandler;InnerStyleSheet;IsDirty;Key;LoadFromFile(LoadFromFile(FileName: String););LoadFromStream(LoadFromStream(Stream:  IIOStream ););LockPrxUserEvents(LockPrxUserEvents(Events:  PrxReportUserEvents ););MetabaseObject;MetabaseObjectInstance;Name;Options;ParseCell(ParseCell(Address: String):  IPrxRange ;);ParseRange(ParseRange(Address: String):  IPrxRange ;);Recalc;RecalcC(RecalcC: ([Context: IPrxReportRecalcContext =Null]););RefreshDataSources;RemoveEventHandler(RemoveEventHandler(Cookie: Integer););SaveToFile(SaveToFile(FileName: String; Mode:  PrxReportSaveMode ););SaveToStream(SaveToStream(Stream:  IIOStream ;);Scales;Sheets;Static;StyleSheet;SyncGroups;TableIslands;TableSources;Title;UnLockUserPrxEvents(UnLockUserPrxEvents(Events:  PrxReportUserEvents ););UndoRedo
+Reports	IPrxReportClass	interface	ActiveReport
+Reports	IPrxReportControls	interface	Add(Add(Sheet:  IPrxSheet ):);Clear;Edit;Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);Save;SheetControls(SheetControls(Sheet:  IPrxSheet ):)
+Reports	IPrxReportExporter	interface	AutoHeight;BreakIntoLayouts;BulkSettings;EmfType;ExportBreaksRtf;ExportCellImages;ExportChartsAsImages;ExportEmptyPages;ExportFlowDocumentsAsImages;ExportFootnotes;ExportFormulas;ExportHeadlines;ExportHiddenCells;ExportHiddenSheets;ExportHyperlinkOpenURLAction;ExportObjectAsBitmap;ExportObjects;ExportPalette;ExportRange;ExportReportTitle;ExportSecurityLabels;ExportSheetTitles;FinishBatchCommand;IsExportToPdfAvailable;Label;LoadSettings(LoadSettings: (Container: Variant););Report;SaveSettings(SaveSettings: (Container: Variant););Sheet;SheetAccess;StartBatchCommand(StartBatchCommand(FileName: String; FormatTag: String);)
+Reports	IPrxReportOptions	interface	ControlPanelPosition;ControlPanelVisible;CorrectChartRanges;DisplayTabs;DrawTextFormat;ErrorCheckingOptions;FootnotePanelOptions;HyperlinkFont;IgnoreDirtyOnClose;NoRecalcOnOpen;PreviewEnableEdit;SetDefaultHyperlinkFont;UpdateSettings
+Reports	IPrxReportRecalcContext	interface	Clear;ParamValuesChanged;RecalcDataIsland(RecalcDataIsland(DataIsland:  IPrxDataIsland ):);RecalcEaxObject(RecalcEaxObject(Obj:   IEaxObject  ):);RecalcFormulaIsland(RecalcFormulaIsland (FormulaIsland:  IPrxFormulaIsland ):);RecalcReport;RecalcSheet(RecalcSheet(Sheet:  IPrxSheet ):);RecalcTableIsland(RecalcTableIsland(TableIsland:  IPrxTableIsland ):);Report
+Reports	IPrxReportTitle	interface	Height
+Reports	IPrxReportUserEvents	interface	EventOnAfterActivateSheet(EventOnAfterActivateSheet(Args:  IUiPrxActivateSheetEventArgs ););EventOnAfterAddDataIsland(EventOnAfterAddDataIsland(Args:  IUiPrxDataIslandEventArgs ););EventOnAfterAddEaxGrid(EventOnAfterAddEaxGrid(Args:  IUiPrxEaxGridEventArgs ););EventOnAfterAddFormulaIsland(EventOnAfterAddFormulaIsland(Args:  IUiPrxFormulaIslandEventArgs ););EventOnAfterAddSheet(EventOnAfterAddSheet(Args:  IUiPrxSheetEventArgs ););EventOnAfterAddTableIsland(EventOnAfterAddTableIsland(Args:  IUiPrxTableIslandEventArgs ););EventOnAfterDeleteDataIsland(EventOnAfterDeleteDataIsland(Args:  IUiPrxDataIslandEventArgs ););EventOnAfterDeleteEaxGrid(EventOnAfterDeleteEaxGrid(Args:  IUiPrxEaxGridEventArgs ););EventOnAfterDeleteFormulaIsland(EventOnAfterDeleteFormulaIsland(Args:  IUiPrxFormulaIslandEventArgs ););EventOnAfterDeleteSheet(EventOnAfterDeleteSheet(Args:  IUiPrxSheetEventArgs ););EventOnAfterDeleteTableIsland(EventOnAfterDeleteTableIsland(Args:  IUiPrxTableIslandEventArgs ););EventOnAfterExecuteDataIsland(EventOnAfterExecuteDataIsland(Args:  IUiPrxDataIslandEventArgs ););EventOnAfterExecuteFormulaIsland(EventOnAfterExecuteFormulaIsland(Args:  IUiPrxFormulaIslandEventArgs ););EventOnAfterExecuteReport(EventOnAfterExecuteReport(Args:  IUiPrxReportEventArgs ););EventOnAfterExecuteTableIsland(EventOnAfterExecuteTableIsland(Args:  IUiPrxTableIslandEventArgs ););EventOnAfterExportReport(EventOnAfterExportReport(Args:  IUiPrxExportEventArgs ););EventOnAfterPrintReport(EventOnAfterPrintReport(Args:  IUiPrxReportEventArgs ););EventOnAfterRecalcSheet(EventOnAfterRecalcSheet(Args:  IUiPrxSheetEventArgs ););EventOnAfterRefreshEaxGrid(EventOnAfterRefreshEaxGrid( EaxGrid :    IEaxGrid  ););EventOnAfterSortEaxGrid(EventOnAfterSortEaxGrid (Args:  IUiPrxEaxGridEventArgs ););EventOnAfterTransferData(EventOnAfterTransferData(Args:  IUiPrxReportEventArgs ););EventOnAfterTransferDataDataIsland(EventOnAfterTransferDataDataIsland(Args:  IUiPrxDataIslandEventArgs ););EventOnAfterTransferDataEaxGrid(EventOnAfterTransferDataEaxGrid (Args:  IUiPrxEaxGridEventArgs ););EventOnAfterTransferDataSheet(EventOnAfterTransferDataSheet(Args:  IUiPrxSheetEventArgs ););EventOnAuditOperation(EventOnAuditOperation(Args:  IUiPrxReportAuditOperationEventArgs ););EventOnBeforeActivateSheet(EventOnBeforeActivateSheet(Args:  IUiPrxCancelActivateSheetEventArgs ););EventOnBeforeChangeControlValue(EventOnBeforeChangeControlValue (Args:  IUiPrxControlCancelEventArgs ););EventOnBeforeDeleteControl(EventOnBeforeDeleteControl(Args:  IUiPrxControlCancelEventArgs ););EventOnBeforeDeleteSheet(EventOnBeforeDeleteSheet (Args:  IUiPrxSheetCancelEventArgs ););EventOnBeforeExecuteCombined(EventOnBeforeExecuteCombined(Args:  IUiPrxReportEventArgs ););EventOnBeforeExecuteDataIsland(EventOnBeforeExecuteDataIsland(Args:  IUiPrxDataIslandCancelEventArgs ););EventOnBeforeExecuteFormulaIsland(EventOnBeforeExecuteFormulaIsland(Args:  IUiPrxFormulaIslandCancelEventArgs ););EventOnBeforeExecuteReport(EventOnBeforeExecuteReport(Args:  IUiPrxReportCancelEventArgs ););EventOnBeforeExecuteTableIsland(EventOnBeforeExecuteTableIsland(Args:  IUiPrxTableIslandCancelEventArgs ););EventOnBeforeExportReport(EventOnBeforeExportReport(Args:  IUiPrxExportCancelEventArgs ););EventOnBeforeOpenReport(EventOnBeforeOpenReport(Args:  IUiPrxReportCancelEventArgs ););EventOnBeforePrintReport(EventOnBeforePrintReport(Args:  IUiPrxReportCancelEventArgs ););EventOnBeforeRecalcSheet(EventOnBeforeRecalcSheet(Args:  IUiPrxSheetCancelEventArgs ););EventOnBeforeRefreshEaxGrid(EventOnBeforeRefreshEaxGrid( EaxGrid:  IEaxGrid ;  Var Can  cel: Boolean  ););EventOnBeforeSaveReport(EventOnBeforeSaveReport(Args:  IUiPrxReportCancelEventArgs ););EventOnBeforeSaveToStateServer(EventOnBeforeSaveToStateServer(Args:  IUiPrxReportEventArgs ););EventOnBeforeSortEaxGrid(EventOnBeforeSortEaxGrid (Args:  IUiPrxEaxGridCancelEventArgs ););EventOnBeforeTransferData(EventOnBeforeTransferData(Args:  IUiPrxReportCancelEventArgs ););EventOnBeforeTransferDataDataIsland(EventOnBeforeTransferDataDataIsland(Args:  IUiPrxDataIslandCancelEventArgs ););EventOnBeforeTransferDataEaxGrid(EventOnBeforeTransferDataEaxGrid (Args:  IUiPrxExportCancelEventArgs ););EventOnBeforeTransferDataSheet(EventOnBeforeTransferDataSheet(Args:  IUiPrxSheetCancelEventArgs ););EventOnCellChange(EventOnCellChange(Args:  IUiPrxCellChangeEventArgs ););EventOnChangeControlValue(EventOnChangeControlValue(Args:  IUiPrxControlEventArgs ););EventOnSubstituteReport(EventOnSubstituteReport(Args:  IUiPrxReportBaseSubstitutionEventArgs );)
+Reports	IPrxScene3D	interface	AutoAdjust;DoSerieClick(DoSerieClick(Args: IScene3DSeriesClickArgs););SerieAction;Series;Sheet
+Reports	IPrxScene3DConvexHullSerie	interface	
+Reports	IPrxScene3DNamedPointSerie	interface	Name;NameRange;Points;PointsInRows;PointsRange
+Reports	IPrxScene3DPointSerie	interface	Radius;RadiusRange
+Reports	IPrxScene3DSerie	interface	Key;Type;X;XRange;Y;YRange;Z;ZRange
+Reports	IPrxScene3DSeries	interface	Add(Add(Type: Scene3DSerieType):);Clear;Count;FindByKey(FindByKey(Key: Integer):  IPrxScene3DSerie ;);Item(Item(Index: Integer):  IPrxScene3DSerie ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;)
+Reports	IPrxScene3DSurfaceSerie	interface	
+Reports	IPrxShape	interface	EditText;Type
+Reports	IPrxSheet	interface	Active;CopyFrom(CopyFrom(Source:  IPrxSheet ););Duplicate;HeadersFooters;Index;IsLoaded;Key;Load;Name;PageSettings;Printable;ProtectFromGlobalRecalc;Recalc;Scale;Sheets;Type;Visible
+Reports	IPrxSheetHeader	interface	Margin
+Reports	IPrxSheetHeaderBase	interface	Center;IsTop;Left;Printable;Right
+Reports	IPrxSheetHeaderPart	interface	Color;Disposition;Font;Image;ImageAsBackground;ImageDocument;ImageHeight;ImageTransparentColor;ImageWidth;Text
+Reports	IPrxSheetHeaders	interface	DifferentFirstPageHeaderFooter;EvenPageFooter;EvenPageHeader;FirstPageFooter;FirstPageHeader;Footer;Header;OddAndEvenPagesHeaderFooter
+Reports	IPrxSheets	interface	Add(Add(Name: String, [Type:  PrxSheetType);Clear;Count;FindByKey(FindByKey(Key: Integer):  IPrxSheet ;);FindByName(FindByName(Id: String):  IPrxSheet ;);Insert(Insert(Index: Integer, Name: String; [Type:  PrxSheetType);InsertAfter(InsertAfter(Index: Integer; Name: String; [Type:);Item(Item(Index: Integer):  IPrxSheet ;);Move(Move(OldIndex: Integer; NewIndex: Integer););Remove(Remove(Index: Integer): Boolean;);Report
+Reports	IPrxSlice	interface	AggregationEnabled;Copy(Copy(Options:  PrxSliceCopyOptions ): IPrxSlice ;);CreateMapDataAdapter(CreateMapDataAdapter(AdapterType:  PrxMapAdapter ):    IPrxMapDataAdapter   ;);DataSource;DataSourceTotalsDefined;Dimensions;Execute;FixedHeader;GetDimension(GetDimension(DimKey Integer):  IEaxDimensionInstance ;);GetRecentChanges;IsAggregationEnabled;Key;LeftHeader;Matrix;Name;Report;Selection;Slices;TopHeader
+Reports	IPrxSliceDataCache	interface	
+Reports	IPrxSliceDimension	interface	AggregationEnabled;AggregatorOperation;BeginUpdate;Dimension;Dimensions;Disposition;EndUpdate;HeaderPosition;Id;InUpdate;IsAggregationEnabled;IsDSAggregationSupported;Key;MoveFirst(MoveFirst(Disposition:  PrxHeaderDisposition ););MoveLast(MoveLast(Disposition:  PrxHeaderDisposition ););MoveToPosition(MoveToPosition(Disposition:  PrxHeaderDisposition ;);Name;Selection;Slice;SyncIndex;UseDSAggregationValue
+Reports	IPrxSliceDimensionInstance	interface	PrxSlice;SliceDimension
+Reports	IPrxSliceDimensions	interface	Count;FindById(FindById(Id: String):  IPrxSliceDimension ;);FindByKey(FindByKey(Key: Integer):  IPrxSliceDimension ;);FindByName(FindByName(Name: String):  IPrxSliceDimension ;);Item(Item(Index: Integer):  IPrxSliceDimension ;);Slice
+Reports	IPrxSliceHeader	interface	
+Reports	IPrxSlices	interface	Add;Clear;Count;DataSource;FindByKey(FindByKey(Key: Integer):  IPrxSlice ;);Item(Item(Index: Integer):  IPrxSlice ;);Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxTable	interface	CreatePrinter;DataBinding;TabSheet
+Reports	IPrxTableDataBinding	interface	AttachCell(AttachCell(Row: Integer; Column: Integer; Slice:);AttachRange(AttachRange(TabRange: ITabRange;);DetachCell(DetachCell(Row: Integer; Column: Integer): Boolean;);DetachRange(DetachRange(TabRange: ITabRange):);DrillCell(DrillCell(Row: Integer; Column: Integer):  IPrxDrillCellResult ;)
+Reports	IPrxTableIsland	interface	AdjustMode;ColumnsBehaviour;Copy(Copy([Sheet:  IPrxSheet);Edit;Groupings;Layout;Pager;Range;Recalc;Report;Revert;RowsBehaviour;RowsToInsert;Save;Sheet;Source;TableIslands;TotalValues(TotalValues(GroupValues: Array):  IPrxTableIslandTotalValues ;)
+Reports	IPrxTableIslandField	interface	Caption;Expression;FieldName
+Reports	IPrxTableIslandFormat	interface	Conditions;Style
+Reports	IPrxTableIslandGrouping	interface	Caption;Field;Format;Hierarchical;Indent;IsHierarchical;Island;Style;Totals;Visible
+Reports	IPrxTableIslandGroupingMethod	interface	Cell;Field;Method;Totals
+Reports	IPrxTableIslandGroupingTotals	interface	Caption;Format;Grouping;Method(Method(Cell:  IPrxTableIslandLayoutCell ));Style;Visible
+Reports	IPrxTableIslandGroupings	interface	Add;Clear;Count;Island;Item(Item(Index: Integer):  IPrxTableIslandGrouping ;);Move(Move(OldIndex: Integer; NewIndex: Integer););Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxTableIslandLayout	interface	Add;Clear;Count;Filter;FilterEnabled;Format;Island;Remove(Remove(Index: Integer): Boolean;);Rows(Rows(Index: Integer):  IPrxTableIslandLayoutRow ;);Sort;Style;TableStyle
+Reports	IPrxTableIslandLayoutCell	interface	ColumnSpan;Field;Format;GroupingMethod(GroupingMethod(Grouping:  IPrxTableIslandGrouping ):);LayoutCellId;Row;RowSpan;Style
+Reports	IPrxTableIslandLayoutRow	interface	Add;Cells(Cells(Index: Integer):  IPrxTableIslandLayoutCell ;);Clear;Count;HasHeight;Height;Layout;Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxTableIslandPager	interface	DisplayPage;Enabled;ExpandAll;Expanded;Next(Next([PageCount: Integer = 1]););Pages;Prev(Prev([PageCount: Integer = 1]););Rows
+Reports	IPrxTableIslandSort	interface	Add;Clear;Count;Enabled;IsEnabled;Item(Item(Index: Integer):  IPrxTableIslandSortItem ;);Parent;Remove(Remove(Index: Integer): Boolean;)
+Reports	IPrxTableIslandSortItem	interface	Descending;Enabled;InGroups;Index;IsEnabled;LayoutCell;MoveFirst;MoveLast;MoveToPosition(MoveToPosition(Position: Integer););Parent
+Reports	IPrxTableIslandTotalValues	interface	IsValid;TotalValue(TotalValue(CellId: String): Variant;)
+Reports	IPrxTableIslands	interface	Add;Clear;Count;FindById(FindById(Id: String):  IPrxTableIsland ;);FindByKey(FindByKey(Key: Integer):  IPrxTableIsland ;);Item(Item(Index: Integer):  IPrxTableIsland ;);Remove(Remove(Index: Integer): Boolean;);RemoveByKey(RemoveByKey(Key: Integer): Boolean;);Report
+Reports	IPrxTableSource	interface	DataCache;DataObject;Dataset;Execute(Execute([Options: Integer = 0]): IDalCursor;);TableSources
+Reports	IPrxTableSources	interface	Add(Add([Value: IDatasetModel);Clear;Count;FindById(FindById(Id: String):  IPrxTableSource ;);FindByKey(FindByKey(Key: Integer):  IPrxTableSource ;);Item(Item(Index: Integer):  IPrxTableSource ;);Remove(Remove(Index: Integer): Boolean;);Report
+Reports	IPrxVisualizer	interface	EaxVisualizer;Update(Update(Value: Boolean);)
+Reports	IPrxVisualizerLegend	interface	PlacedControl;SetEaxObjectLegend(SetEaxObjectLegend(Object:  IEaxObject ;);Update
+Reports	IReportAfterEditEventArgs	interface	Changed
+Reports	IReportAutoFilterEventArgs	interface	Action
+Reports	IReportBeforeCellChangeEventArgs	interface	Value
+Reports	IReportBeforeEditEventArgs	interface	Cancel
+Reports	IReportBeforeExpanderChangedEventArgs	interface	Cancel
+Reports	IReportBeforeObjectAngleChangeEventArgs	interface	Cancel;NewValue
+Reports	IReportBeforeObjectRectChangeEventArgs	interface	Cancel;NewValue
+Reports	IReportBox	interface	BorderStyle;ClientToTab(ClientToTab(Point: IGxPoint););ControlPanelAllowed;DisplayNumericColumnNames;DisplayTabs;FindReplaceEx(FindReplaceEx(CellSearch:  ITabCellSearch ;);Report;ShowBasicDataDialog(ShowBasicDataDialog(Chart:  IPrxChart ;)
+Reports	IReportCellChangeEventArgs	interface	Value
+Reports	IReportCellContentChangeEventArgs	interface	Cancel;Type;Value
+Reports	IReportCellEventArgs	interface	Column;Row
+Reports	IReportColumnEventArgs	interface	Column
+Reports	IReportColumnResizeEventArgs	interface	Type
+Reports	IReportColumnResizingEventArgs	interface	Cancel
+Reports	IReportControlPanel	interface	BorderStyle;Object;Orientation;Report
+Reports	IReportEditorEventArgs	interface	Editor
+Reports	IReportEventArgs	interface	Report;Sheet
+Reports	IReportExpanderChangedEventArgs	interface	State
+Reports	IReportFormulaBar	interface	Report
+Reports	IReportHyperlinkClickEventArgs	interface	Type
+Reports	IReportInteractiveSelectionChangeEventArgs	interface	Cancel
+Reports	IReportInteractiveSelectionEventArgs	interface	Range;Type
+Reports	IReportObjectChangeEventArgs	interface	Object;Type
+Reports	IReportObjectEventArgs	interface	Action;Object
+Reports	IReportObjectMovingEventArgs	interface	Cancel;Object;Rect
+Reports	IReportObjectResizingEventArgs	interface	Cancel;Object;Rect;Side
+Reports	IReportProtectionFailEventArgs	interface	Handled;Message
+Reports	IReportRangeDeleteEventArgs	interface	Range;ShiftDirection
+Reports	IReportRangeInsertEventArgs	interface	Range;ShiftDirection
+Reports	IReportRowEventArgs	interface	Row
+Reports	IReportRowResizeEventArgs	interface	Type
+Reports	IReportRowResizingEventArgs	interface	Cancel
+Reports	IReportScaleChangeEventArgs	interface	Scale
+Reports	IReportUserInteractiveSelectionChangeEventArgs	interface	Cancel
+Reports	IReportUserInteractiveSelectionEventArgs	interface	Selection;Type
+Reports	IUiPrxActivateSheetEventArgs	interface	NewSheet;OldSheet
+Reports	IUiPrxCancelActivateSheetEventArgs	interface	Cancel
+Reports	IUiPrxCellChangeEventArgs	interface	Column;Row;Sheet;Value
+Reports	IUiPrxControlCancelEventArgs	interface	Cancel
+Reports	IUiPrxControlEventArgs	interface	Control
+Reports	IUiPrxDataIslandCancelEventArgs	interface	Cancel
+Reports	IUiPrxDataIslandEventArgs	interface	DataIsland
+Reports	IUiPrxEaxGridCancelEventArgs	interface	Cancel
+Reports	IUiPrxEaxGridEventArgs	interface	EaxGrid
+Reports	IUiPrxExportCancelEventArgs	interface	Exporter;Format
+Reports	IUiPrxExportEventArgs	interface	Format
+Reports	IUiPrxFormulaIslandCancelEventArgs	interface	Cancel
+Reports	IUiPrxFormulaIslandEventArgs	interface	FormulaIsland
+Reports	IUiPrxReportAuditOperationEventArgs	interface	Comment;FromWeb;Operation;Repeated
+Reports	IUiPrxReportBaseSubstitutionEventArgs	interface	Context;Report
+Reports	IUiPrxReportCancelEventArgs	interface	Cancel
+Reports	IUiPrxReportEventArgs	interface	Report
+Reports	IUiPrxReportExportSubstitutionEventArgs	interface	ExportFormat
+Reports	IUiPrxSheetCancelEventArgs	interface	Cancel
+Reports	IUiPrxSheetEventArgs	interface	Sheet
+Reports	IUiPrxTableIslandCancelEventArgs	interface	Cancel
+Reports	IUiPrxTableIslandEventArgs	interface	TableIsland
+Reports	IUiReport	interface	Report
+Reports	IUiReportBaseEventArgs	interface	UiRep
+Reports	LayoutFormulaTermType	enum	
+Reports	OnAfterActivateSheetIUiReportEventsDelegate		
+Reports	OnAfterAddDataIslandIUiReportEventsDelegate		
+Reports	OnAfterAddEaxGridIUiReportEventsDelegate		
+Reports	OnAfterAddFormulaIslandIUiReportEventsDelegate		
+Reports	OnAfterAddSheetIUiReportEventsDelegate		
+Reports	OnAfterAddTableIslandIUiReportEventsDelegate		
+Reports	OnAfterDeleteDataIslandIUiReportEventsDelegate		
+Reports	OnAfterDeleteEaxGridIUiReportEventsDelegate		
+Reports	OnAfterDeleteFormulaIslandIUiReportEventsDelegate		
+Reports	OnAfterDeleteRangeIReportBoxEventsDelegate		
+Reports	OnAfterDeleteSheetIUiReportEventsDelegate		
+Reports	OnAfterDeleteTableIslandIUiReportEventsDelegate		
+Reports	OnAfterEditIReportBoxEventsDelegate		
+Reports	OnAfterExecuteDataIslandIUiReportEventsDelegate		
+Reports	OnAfterExecuteFormulaIslandIUiReportEventsDelegate		
+Reports	OnAfterExecuteReportIUiReportEventsDelegate		
+Reports	OnAfterExecuteTableIslandIUiReportEventsDelegate		
+Reports	OnAfterExportReportIUiReportEventsDelegate		
+Reports	OnAfterInsertRangeIReportBoxEventsDelegate		
+Reports	OnAfterObjectChangeIReportBoxEventsDelegate		
+Reports	OnAfterPrintReportIUiReportEventsDelegate		
+Reports	OnAfterRecalcSheetIUiReportEventsDelegate		
+Reports	OnAfterRefreshEaxGridIUiReportEventsDelegate		
+Reports	OnAfterSortEaxGridIUiReportEventsDelegate		
+Reports	OnAfterTransferDataDataIslandIUiReportEventsDelegate		
+Reports	OnAfterTransferDataEaxGridIUiReportEventsDelegate		
+Reports	OnAfterTransferDataIUiReportEventsDelegate		
+Reports	OnAfterTransferDataSheetIUiReportEventsDelegate		
+Reports	OnAutoFilterIReportBoxEventsDelegate		
+Reports	OnBeforeActivateSheetIUiReportEventsDelegate		
+Reports	OnBeforeCellChangeIReportBoxEventsDelegate		
+Reports	OnBeforeCellsChangeIReportBoxEventsDelegate		
+Reports	OnBeforeChangeControlValueIUiReportEventsDelegate		
+Reports	OnBeforeColumnResizeIReportBoxEventsDelegate		
+Reports	OnBeforeDeleteControlIUiReportEventsDelegate		
+Reports	OnBeforeDeleteRangeIReportBoxEventsDelegate		
+Reports	OnBeforeDeleteSheetIUiReportEventsDelegate		
+Reports	OnBeforeEditIReportBoxEventsDelegate		
+Reports	OnBeforeExecuteCombinedIUiReportEventsDelegate		
+Reports	OnBeforeExecuteDataIslandIUiReportEventsDelegate		
+Reports	OnBeforeExecuteFormulaIslandIUiReportEventsDelegate		
+Reports	OnBeforeExecuteReportIUiReportEventsDelegate		
+Reports	OnBeforeExecuteTableIslandIUiReportEventsDelegate		
+Reports	OnBeforeExpanderChangedIReportBoxEventsDelegate		
+Reports	OnBeforeExportReportIUiReportEventsDelegate		
+Reports	OnBeforeInsertRangeIReportBoxEventsDelegate		
+Reports	OnBeforeObjectChangeIReportBoxEventsDelegate		
+Reports	OnBeforePrintReportIUiReportEventsDelegate		
+Reports	OnBeforeRecalcSheetIUiReportEventsDelegate		
+Reports	OnBeforeRefreshEaxGridIUiReportEventsDelegate		
+Reports	OnBeforeRowResizeIReportBoxEventsDelegate		
+Reports	OnBeforeSaveReportIUiReportEventsDelegate		
+Reports	OnBeforeSaveToStateServerIUiReportEventsDelegate		
+Reports	OnBeforeSortEaxGridIUiReportEventsDelegate		
+Reports	OnBeforeTransferDataDataIslandIUiReportEventsDelegate		
+Reports	OnBeforeTransferDataEaxGridIUiReportEventsDelegate		
+Reports	OnBeforeTransferDataIUiReportEventsDelegate		
+Reports	OnBeforeTransferDataSheetIUiReportEventsDelegate		
+Reports	OnBeginInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	OnBeginSelectionChangeIReportBoxEventsDelegate		
+Reports	OnBeginUserInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	OnCellChangeIReportBoxEventsDelegate		
+Reports	OnCellChangeIUiReportEventsDelegate		
+Reports	OnCellClickIReportBoxEventsDelegate		
+Reports	OnCellPictureClickIReportBoxEventsDelegate		
+Reports	OnCellsChangeIReportBoxEventsDelegate		
+Reports	OnChangeCellContentIReportBoxEventsDelegate		
+Reports	OnChangeControlValueIUiReportEventsDelegate		
+Reports	OnColumnClickIReportBoxEventsDelegate		
+Reports	OnColumnResizeIReportBoxEventsDelegate		
+Reports	OnColumnResizingIReportBoxEventsDelegate		
+Reports	OnEditorTextChangedIReportBoxEventsDelegate		
+Reports	OnEndInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	OnEndSelectionChangeIReportBoxEventsDelegate		
+Reports	OnEndUserInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	OnExpanderChangedIReportBoxEventsDelegate		
+Reports	OnGetDataAreaHintIReportFormulaBarEventsDelegate		
+Reports	OnHyperlinkClickIReportBoxEventsDelegate		
+Reports	OnInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	OnObjectActivateIReportBoxEventsDelegate		
+Reports	OnObjectMovingIReportBoxEventsDelegate		
+Reports	OnObjectResizingIReportBoxEventsDelegate		
+Reports	OnObjectsSelectionChangedIReportBoxEventsDelegate		
+Reports	OnProtectionFailIReportBoxEventsDelegate		
+Reports	OnRowClickIReportBoxEventsDelegate		
+Reports	OnRowResizeIReportBoxEventsDelegate		
+Reports	OnRowResizingIReportBoxEventsDelegate		
+Reports	OnScaleChangeIReportBoxEventsDelegate		
+Reports	OnSelectionChangeIReportBoxEventsDelegate		
+Reports	OnSubstituteReportIUiReportEventsDelegate		
+Reports	OnTableClickIReportBoxEventsDelegate		
+Reports	OnUserInteractiveSelectionChangeIReportBoxEventsDelegate		
+Reports	PamAssemblyMethod	enum	
+Reports	PrxAdapterDataType	enum	
+Reports	PrxAdjustMode	enum	
+Reports	PrxChartSourceType	enum	
+Reports	PrxControlPanelOrientation	enum	
+Reports	PrxControlPanelPosition	enum	
+Reports	PrxDataAdapterConsumer	enum	
+Reports	PrxDataDrillMode	enum	
+Reports	PrxDataIslandCategory	enum	
+Reports	PrxDataIslandHeaderBehaviour	enum	
+Reports	PrxDataIslandHeaderPlacement	enum	
+Reports	PrxDataIslandPart	enum	
+Reports	PrxDimensionSortFilter	enum	
+Reports	PrxDimensionSortKind	enum	
+Reports	PrxDimensionSortMethod	enum	
+Reports	PrxHeaderDisposition	enum	
+Reports	PrxMapAdapter	enum	
+Reports	PrxMapScale	enum	
+Reports	PrxNamingPlaceArrangement	enum	
+Reports	PrxNamingPlacement	enum	
+Reports	PrxNumberingType	enum	
+Reports	PrxPointChartMode	enum	
+Reports	PrxReport	class	
+Reports	PrxReportAuditOperation	enum	
+Reports	PrxReportExporter	class	
+Reports	PrxReportSaveMode	enum	
+Reports	PrxReportSubstitutionContext	enum	
+Reports	PrxReportUserEvents	enum	
+Reports	PrxShapeType	enum	
+Reports	PrxSheetHeaderPartDisposition	enum	
+Reports	PrxSheetType	enum	
+Reports	PrxSliceCopyOptions	enum	
+Reports	ReportBeforeCellChangeEventArgs	class	Create(Create (Report:  IReportBox ;)
+Reports	ReportBeforeExpanderChangedEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	ReportBeforeObjectAngleChangeEventArgs	class	Create(Create (Report:  IReportBox ;)
+Reports	ReportBeforeObjectRectChangeEventArgs	class	Create(Create (Report:  IReportBox ;)
+Reports	ReportBox	class	OnAfterDeleteRange(OnAfterDeleteRange(Sender: Object;  Args:  IReportRangeDeleteEventArgs  ););OnAfterEdit(OnAfterEdit(Sender: Object; Args:    IReportAfterEditEventArgs   ););OnAfterInsertRange(OnAfterInsertRange(Sender: Object;  Args:  IReportRangeInsertEventArgs  ););OnAfterObjectChange(OnAfterObjectChange (Sender: Object; Args:);OnAutoFilter(OnAutoFilter(Sender: Object; Args:    IReportAutoFilterEventArgs   ););OnBeforeCellChange(OnBeforeCellChange(Sender: Object; Args:    IReportBeforeCellChangeEventArgs   ););OnBeforeColumnResize(OnBeforeColumnResize(Sender: Object; Args:  IReportColumnEventArgs ););OnBeforeDeleteRange(OnBeforeDeleteRange(Sender: Object;  Args:  IReportRangeDeleteEventArgs  ););OnBeforeEdit(OnBeforeEdit(Sender: Object; Args:    IReportBeforeEditEventArgs   ););OnBeforeExpanderChanged(OnBeforeExpanderChanged(Sender: Object; Args:  IReportBeforeExpanderChangedEventArgs ););OnBeforeInsertRange(OnBeforeInsertRange(Sender: Object;  Args:  IReportRangeInsertEventArgs  ););OnBeforeObjectChange(OnBeforeObjectChange (Sender: Object; Args:);OnBeforeRowResize(OnBeforeRowResize(Sender: Object; Args:  IReportRowEventArgs ););OnBeginInteractiveSelectionChange(OnBeginInteractiveSelectionChange(Sender: Object;);OnCellChange(OnCellChange(Sender: Object; Args:    IReportCellChangeEventArgs   ););OnCellClick(OnCellClick(Sender: Object; Args:    IReportCellEventArgs   ););OnCellPictureClick(OnCellPictureClick(Sender: Object; Args:    IReportCellEventArgs   ););OnChangeCellContent(ReportBoxOnChangeCellContent(Sender: Object; Args:);OnColumnClick(OnColumnClick(Sender: Object; Args:    IReportColumnEventArgs   ););OnColumnResize(OnColumnResize(Sender: Object; Args:  IReportColumnResizeEventArgs ););OnColumnResizing(OnColumnResizing(Sender: Object; Args:  IReportColumnResizingEventArgs ););OnEditorTextChanged(OnEditorTextChanged(Sender: Object; Args:  IReportEditorEventArgs ););OnEndInteractiveSelectionChange(OnEndInteractiveSelectionChange(Sender: Object;);OnExpanderChanged(OnExpanderChanged(Sender: Object; Args:  IReportExpanderChangedEventArgs ););OnHyperlinkClick(OnHyperlinkClick(Sender: Object; Args:    IReportHyperlinkClickEventArgs   ););OnInteractiveSelectionChange(OnInteractiveSelectionChange(Sender: Object; Args:);OnObjectActivate(OnObjectActivate(Sender: Object; Args:    IReportObjectEventArgs   ););OnObjectMoving(OnObjectMoving(Sender: Object; Agrs:  IReportObjectMovingEventArgs ););OnObjectResizing(OnObjectResizing(Sender: Object; Agrs:  IReportObjectResizingEventArgs ););OnRowClick(OnRowClick(Sender: Object; Args:    IReportRowEventArgs   ););OnRowResize(OnRowResize(Sender: Object; Args:  IReportRowResizeEventArgs ););OnRowResizing(OnRowResizing(Sender: Object; Args:  IReportRowResizingEventArgs ););OnScaleChange(OnScaleChange(Sender: Object; Args:    IReportScaleChangeEventArgs   ););OnSelectionChange(OnSelectionChange(Sender: Object; Args:    IReportEventArgs   ););OnTableClick(OnTableClick(Sender: Object; Args:    IReportEventArgs   );)
+Reports	ReportCellContentChangeEventArgs	class	Create(Create()
+Reports	ReportCellEventArgs	class	CreateReportCellArgs(CreateReportCellArgs(Report:  IReportBox ;)
+Reports	ReportColumnEventArgs	class	CreateReportColumnArgs(CreateReportColumnArgs(Report:  IReportBox ;)
+Reports	ReportColumnResizeEventArgs	class	CreateReportColumnResizeArgs(CreateReportColumnResizeArgs(Report:  IReportBox ;)
+Reports	ReportColumnResizingEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	ReportEditorEventArgs	class	CreateEditorArgs(CreateArgs(Report:  IReportBox ;)
+Reports	ReportEventArgs	class	CreateArgs(CreateArgs(Report:  IReportBox ;)
+Reports	ReportEvents	class	OnAfterActivateSheet(OnAfterActivateSheet(OldSheet:  IPrxSheet ;);OnAfterAddDataIsland(OnAfterAddDataIsland(DataIsland:  IPrxDataIsland ););OnAfterAddEaxGrid(OnAfterAddEaxGrid(EaxGrid:  IEaxGrid ););OnAfterAddFormulaIsland(OnAfterAddFormulaIsland(FormulaIsland:  IPrxFormulaIsland ););OnAfterAddSheet(OnAfterAddSheet(Sheet:  IPrxSheet ););OnAfterAddTableIsland(OnAfterAddTableIsland(TableIsland:  IPrxTableIsland ););OnAfterDeleteDataIsland(OnAfterDeleteDataIsland(DataIsland:  IPrxDataIsland ););OnAfterDeleteTableIsland(OnAfterDeleteTableIsland(TableIsland:  IPrxTableIsland ););OnAfterExecuteDataIsland(OnAfterExecuteDataIsland(DataIsland :  IPrxDataIsland ););OnAfterExecuteFormulaIsland(OnAfterExecuteFormulaIsland(FormulaIsland:  IPrxFormulaIsland ););OnAfterExecuteReport(OnAfterExecuteReport(Report:  IPrxReport ););OnAfterExecuteTableIsland(OnAfterExecuteTableIsland(TableIsland:  IPrxTableIsland ););OnAfterExportReport(OnAfterExportReport(Report:  IPrxReport ););OnAfterPrintReport(OnAfterPrintReport(Report:  IPrxReport ););OnAfterRecalcSheet(OnAfterRecalcSheet(Sheet :  IPrxSheet ););OnAfterRefreshEaxGrid(OnAfterRefreshEaxGrid(EaxGrid:  IEaxGrid ););OnAfterSortEaxGrid(OnAfterSortEaxGrid (EaxGrid:  IEaxGrid ););OnAfterTransferData(OnAfterTransferData(Report :  IPrxReport ););OnAfterTransferDataDataIsland(OnAfterTransferDataDataIsland(DataIsland:  IPrxDataIsland ););OnAfterTransferDataEaxGrid(OnAfterTransferDataEaxGrid (EaxGrid:  IEaxGrid ););OnAfterTransferDataSheet(OnAfterTransferDataSheet(Sheet:  IPrxSheet ););OnBeforeActivateSheet(OnBeforeActivateSheet(OldSheet: IPrxSheet ;);OnBeforeChangeControlValue(OnBeforeChangeControlValue (Control:  IPrxControl ; Var Cancel: Boolean););OnBeforeDeleteControl(OnBeforeDeleteControl(Control:  IPrxControl ;);OnBeforeDeleteSheet(OnBeforeDeleteSheet (Sheet:  IPrxSheet ; Var Cancel: Boolean););OnBeforeExecuteCombined(OnBeforeExecuteCombined(Report:  IPrxReport ););OnBeforeExecuteDataIsland(OnBeforeExecuteDataIsland(DataIsland:  IPrxDataIsland ;);OnBeforeExecuteFormulaIsland(OnBeforeExecuteFormulaIsland(FormulaIsland:  IPrxFormulaIsland ;);OnBeforeExecuteReport(OnBeforeExecuteReport(Report:  IPrxReport ;);OnBeforeExecuteTableIsland(OnBeforeExecuteTableIsland(TableIsland:  IPrxTableIsland ;);OnBeforeExportReport(OnBeforeExportReport(Report:  IPrxReport ,);OnBeforeOpenReport(OnBeforeOpenReport(Report:  IPrxReport ;);OnBeforePrintReport(OnBeforePrintReport(Report:  IPrxReport ,);OnBeforeRecalcSheet(OnBeforeRecalcSheet(Sheet:  IPrxSheet ;);OnBeforeRefreshEaxGrid(OnBeforeRefreshEaxGrid(EaxGrid:  IEaxGrid ;);OnBeforeSaveReport(OnBeforeSaveReport(Report:  IPrxReport ;);OnBeforeSaveToStateServer(OnBeforeSaveToStateServer(Report:  IPrxReport ););OnBeforeSortEaxGrid(OnBeforeSortEaxGrid (EaxGrid:  IEaxGrid ););OnBeforeTransferData(OnBeforeTransferData(Report:  IPrxReport ;);OnBeforeTransferDataDataIsland(OnBeforeTransferDataDataIsland(DataIsland:  IPrxDataIsland ;);OnBeforeTransferDataEaxGrid(OnBeforeTransferDataEaxGrid (EaxGrid:  IEaxGrid ;);OnBeforeTransferDataSheet(OnBeforeTransferDataSheet(Sheet:  IPrxSheet ;);OnCellChange(OnCellChange(Sheet:  IPrxSheet ;);OnChangeControlValue(OnChangeControlValue(Control :  IPrxControl ););OnSubstituteReport(OnSubstituteReport(Args:  IUiPrxReportBaseSubstitutionEventArgs );)
+Reports	ReportExpanderChangedEventArgs	class	CreateReportExpanderArgs(CreateReportExpanderArgs(Report:  IReportBox ;)
+Reports	ReportFormulaBar	class	OnGetDataAreaHint(Sub  OnGetDataAreaHint(Sender:)
+Reports	ReportHyperlinkClickEventArgs	class	Create(Create (Report:  IReportBox ;)
+Reports	ReportInteractiveSelectionChangeEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	ReportInteractiveSelectionEventArgs	class	CreateInteractiveSelectionArgs(CreateInteractiveSelectionArgs(Report:  IReportBox ;)
+Reports	ReportObjectChangeEventArgs	class	CreateObjectChangeArgs(CreateObjectChangeArgs (Report:  IReportBox ;)
+Reports	ReportObjectMovingEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	ReportObjectResizingEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	ReportRangeDeleteEventArgs	class	Create(Create(Report:  IReportBox ,)
+Reports	ReportRangeInsertEventArgs	class	Create(Create(Report:  IReportBox ,)
+Reports	ReportRowEventArgs	class	CreateReportRowArgs(CreateReportRowArgs(Report:  IReportBox ; Sheet:  IPrxSheet ; Row: Integer);)
+Reports	ReportRowResizeEventArgs	class	CreateReportRowResizeArgs(CreateReportRowResizeArgs(Report:  IReportBox ;)
+Reports	ReportRowResizingEventArgs	class	Create(Create(Report:  IReportBox ;)
+Reports	UiPrxCellChangeEventArgs	class	CreateArgs(CreateArgs (UiRep:  IUiReport ;)
+Reports	UiPrxControlCancelEventArgs	class	Create(Create(UiRep:  IUiReport ;)
+Reports	UiPrxControlEventArgs	class	
+Reports	UiPrxDataIslandEventArgs	class	
+Reports	UiPrxEaxGridCancelEventArgs	class	Create(Create(UiRep:  IUiReport ;)
+Reports	UiPrxEaxGridEventArgs	class	CreateArgs(CreateArgs(UiRep:  IUiReport ,)
+Reports	UiPrxFormulaIslandEventArgs	class	
+Reports	UiPrxReportAuditOperationEventArgs		Create(Create(UiRep:  IUiReport ;);CreateArgs(CreateArgs(UiRep:  IUiReport ;)
+Reports	UiPrxSheetEventArgs	class	
+Reports	UiPrxTableIslandEventArgs	class	
+Reports	UiReport	class	OnAfterActivateSheet(OnAfterActivateSheet(Sender: Object; Args:  IUiPrxActivateSheetEventArgs ););OnAfterAddDataIsland(OnAfterAddDataIsland(Sender: Object; Args:  IUiPrxDataIslandEventArgs ););OnAfterAddEaxGrid(OnAfterAddEaxGrid(Sender: Object; Args:  IUiPrxEaxGridEventArgs ););OnAfterAddFormulaIsland(OnAfterAddFormulaIsland(Sender: Object; Args:  IUiPrxFormulaIslandEventArgs ););OnAfterAddSheet(OnAfterAddSheet(Sender: Object; Args:  IUiPrxSheetEventArgs ););OnAfterAddTableIsland(OnAfterAddTableIsland(Sender: Object; Args:  IUiPrxTableIslandEventArgs ););OnAfterDeleteDataIsland(OnAfterDeleteDataIsland(Sender: Object; Args:  IUiPrxDataIslandEventArgs ););OnAfterDeleteEaxGrid(OnAfterDeleteEaxGrid(Sender: Object; Args:  IUiPrxEaxGridEventArgs ););OnAfterDeleteFormulaIsland(OnAfterDeleteFormulaIsland(Sender: Object; Args:);OnAfterDeleteSheet(OnAfterDeleteSheet(Sender: Object; Args:  IUiPrxSheetEventArgs ););OnAfterDeleteTableIsland(OnAfterDeleteTableIsland(Sender: Object; Args:  IUiPrxTableIslandEventArgs ););OnAfterExecuteDataIsland(OnAfterExecuteDataIsland(Sender: Object; Args:  IUiPrxDataIslandEventArgs ););OnAfterExecuteFormulaIsland(OnAfterExecuteFormulaIsland(Sender: Object; Args:);OnAfterExecuteReport(OnAfterExecuteReport(Sender: Object; Args:  IUiPrxReportEventArgs ););OnAfterExecuteTableIsland(OnAfterExecuteTableIsland(Sender: Object; Args:);OnAfterExportReport(OnAfterExportReport(Sender: Object; Args:  IUiPrxExportEventArgs ););OnAfterPrintReport(OnAfterPrintReport(Sender: Object; Args:  IUiPrxReportEventArgs ););OnAfterRecalcSheet(OnAfterRecalcSheet(Sender: Object; Args:  IUiPrxSheetEventArgs ););OnAfterRefreshEaxGrid(UiReport1OnAfterRefreshEaxGrid(Sender: Object; Args:);OnAfterSortEaxGrid(OnAfterSortEaxGrid(Sender: Object; Args:  IUiPrxEaxGridEventArgs ););OnAfterTransferData(OnAfterTransferData(Sender: Object; Args:  IUiPrxReportEventArgs ););OnAfterTransferDataDataIsland(OnAfterTransferDataDataIsland(Sender: Object; Args:);OnAfterTransferDataEaxGrid(OnAfterTransferDataEaxGrid(Sender: Object; Args:);OnAfterTransferDataSheet(OnAfterTransferDataSheet(Sender: Object; Args:  IUiPrxSheetEventArgs ););OnBeforeActivateSheet(OnBeforeActivateSheet(Sender: Object; Args:  IUiPrxCancelActivateSheetEventArgs ););OnBeforeChangeControlValue(OnBeforeChangeControlValue(Sender: Object; Args:);OnBeforeDeleteControl(OnBeforeDeleteControl(Sender: Object; Args:   IUiPrxControlCancelEventArgs  ););OnBeforeDeleteSheet(OnBeforeDeleteSheet(Sender: Object; Args:  IUiPrxSheetCancelEventArgs ););OnBeforeExecuteCombined(OnBeforeExecuteCombined(Args:  IUiPrxReportEventArgs ););OnBeforeExecuteDataIsland(OnBeforeExecuteDataIsland(Sender: Object; Args:);OnBeforeExecuteFormulaIsland(OnBeforeExecuteFormulaIsland(Sender: Object; Args:);OnBeforeExecuteReport(OnBeforeExecuteReport(Sender: Object; Args:  IUiPrxReportCancelEventArgs ););OnBeforeExecuteTableIsland(OnBeforeExecuteTableIsland(Sender: Object; Args:);OnBeforeExportReport(OnBeforeExportReport(Sender: Object; Args:  IUiPrxExportCancelEventArgs ););OnBeforePrintReport(OnBeforePrintReport(Sender: Object; Args:  IUiPrxReportCancelEventArgs ););OnBeforeRecalcSheet(OnBeforeRecalcSheet(Sender: Object; Args:  IUiPrxSheetCancelEventArgs ););OnBeforeRefreshEaxGrid(UiReport1OnBeforeRefreshEaxGrid(Sender: Object;);OnBeforeSaveReport(OnBeforeSaveReport(Sender: Object; Args:  IUiPrxReportCancelEventArgs ););OnBeforeSaveToStateServer(OnBeforeSaveToStateServer(Sender: Object; Args:);OnBeforeSortEaxGrid(OnBeforeSortEaxGrid(Sender: Object; Args:  IUiPrxEaxGridCancelEventArgs ););OnBeforeTransferData(OnBeforeTransferData(Sender: Object; Args:  IUiPrxReportCancelEventArgs ););OnBeforeTransferDataDataIsland(OnBeforeTransferDataDataIsland(Sender: Object; Args:);OnBeforeTransferDataEaxGrid(OnBeforeTransferDataEaxGrid(Sender: Object; Args:);OnBeforeTransferDataSheet(OnBeforeTransferDataSheet(Sender: Object; Args:);OnCellChange(OnCellChange(Sender: Object; Args:  IUiPrxCellChangeEventArgs ););OnChangeControlValue(OnChangeControlValue(Sender: Object; Args:  IUiPrxControlEventArgs ););OnSubstituteReport(OnSubstituteReport(Sender: Object; Args:  IUiPrxReportBaseSubstitutionEventArgs );)
+Reports	seMethodFromDataSourceIPrxDataIslandTotals	interface	
+Ui	IUiCommandTarget	interface	
+Ui	IWinApplication	interface	

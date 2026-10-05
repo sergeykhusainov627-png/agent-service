@@ -1,0 +1,233 @@
+// ID: PLANPARAMS  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// Форма «Параметры плана недоступности» (PLANPARAMSForm) — окно пересчёта плана (кнопка
+// «Пересчитать план» на форме «Планировщик»): начало плана, число «слоёв» (сколько задач
+// выполняется одновременно) и желаемое окончание (тогда слои посчитаются автоматически).
+// План по слоям считает UnavailabilityPlanner.DistributeScheduleLayers — вызывающая сторона
+// делает это после закрытия окна, поэтому объекты между формами не передаются.
+// Обмен значениями — командами формы (см. REFERENCE §5.29):
+//   F := New PLANPARAMSForm.CreateForm(Self As IWin32Window);
+//   F.SendCommand("SetCaption", "Параметры плана недоступности");
+//   F.SendCommand("SetStart", <начало>);       // по умолчанию — окончание периода недоступности
+//   F.SendCommand("SetLayers", <слоёв>);       // подсказка по умолчанию
+//   F.SendCommand("SetFinish", <окончание>);   // подсказка для «желаемого окончания»
+//   F.ShowModal;                               // окно закрывается крестиком заголовка
+//   Sent := F.SendCommand("GetParams", Null);  // "applied|layers|start|finish"
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+Public Class PLANPARAMSForm: Form
+	LayoutK: Double;
+	Map_: SortedList;
+	StartDatePicker: DateTimePicker;
+	StartTimePicker: DateTimePicker;
+	LayersEditBox: EditBox;
+	FinishCheck: CheckBox;
+	FinishDatePicker: DateTimePicker;
+	FinishTimePicker: DateTimePicker;
+	LblHint: Label;
+	BtnApply: Button;
+	BtnCancel: Button;
+	Applied: Boolean;               // нажали «Пересчитать»
+	Layers: Integer;                // число слоёв (запомнено при «Пересчитать»)
+	PlanStart: DateTime;            // начало плана
+	FinishAt: DateTime;             // желаемое окончание (если стоит флажок)
+	PendingStart: String;           // значения из команд (могут прийти до создания контролов)
+	PendingLayers: String;
+	PendingFinish: String;
+
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		LayoutK := 1.0;
+		Self.Width := Double.RoundInt(560 * LayoutK);
+		Self.Height := Double.RoundInt(330 * LayoutK);
+		Applied := False;
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), LayoutK);
+		Try
+			StartDatePicker := UiFind(Map_, "StartDatePicker");
+			StartTimePicker := UiFind(Map_, "StartTimePicker");
+			LayersEditBox := UiFind(Map_, "LayersEditBox");
+			FinishCheck := UiFind(Map_, "FinishCheck");
+			FinishDatePicker := UiFind(Map_, "FinishDatePicker");
+			FinishTimePicker := UiFind(Map_, "FinishTimePicker");
+			LblHint := UiFind(Map_, "LblHint");
+			BtnApply := UiFind(Map_, "BtnApply");
+			BtnCancel := UiFind(Map_, "BtnCancel");
+			ConfigurePicker(StartDatePicker, True);
+			ConfigurePicker(StartTimePicker, False);
+			ConfigurePicker(FinishDatePicker, True);
+			ConfigurePicker(FinishTimePicker, False);
+			If Not IsNull(BtnApply) Then
+				BtnApply.OnClick := ApplyOnClick;
+			End If;
+			If Not IsNull(BtnCancel) Then
+				BtnCancel.OnClick := CancelOnClick;
+			End If;
+			If Not IsNull(LblHint) Then
+				LblHint.Text := "Слои набиваются плотно: старт следующей задачи в слое — "
+					+ "по окончании предыдущей. Окно закрывается крестиком заголовка.";
+			End If;
+			// значения, пришедшие командами до создания контролов
+			If PendingStart <> "" Then
+				SetPlanStart(PendingStart);
+			End If;
+			If PendingFinish <> "" Then
+				SetPlanFinish(PendingFinish);
+			End If;
+			If PendingLayers <> "" Then
+				SetPlanLayers(PendingLayers);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Параметры плана: контролы не получены — " + e.Message);
+		End Try;
+	End Sub FormOnCreate;
+
+	// Пикер: Kind = дата или время (одновременно нельзя — см. ConfigurePeriodPickers)
+	Sub ConfigurePicker(P: DateTimePicker; IsDate: Boolean);
+	Begin
+		If IsNull(P) Then
+			Return;
+		End If;
+		Try
+			If IsDate Then
+				P.Kind := DateTimePickerKind.Date;
+				P.Format := "dd.MM.yyyy";
+			Else
+				P.Kind := DateTimePickerKind.Time;
+				P.Format := "HH:mm";
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Параметры плана: настройка пикера — " + e.Message);
+		End Try;
+	End Sub ConfigurePicker;
+
+	// Команды от «Планировщика»: SetCaption / SetStart / SetLayers / SetFinish / GetParams
+	Sub PlanParamsFormOnCommand(Sender: Object; Args: ICommandEventArgs);
+	Begin
+		If Args.Command = "SetCaption" Then
+			Self.Text := UnvVarToStr(Args.Argument);
+			Args.Result := True;
+		End If;
+		If Args.Command = "SetStart" Then
+			SetPlanStart(UnvVarToStr(Args.Argument));
+			Args.Result := True;
+		End If;
+		If Args.Command = "SetLayers" Then
+			SetPlanLayers(UnvVarToStr(Args.Argument));
+			Args.Result := True;
+		End If;
+		If Args.Command = "SetFinish" Then
+			SetPlanFinish(UnvVarToStr(Args.Argument));
+			Args.Result := True;
+		End If;
+		If Args.Command = "GetParams" Then
+			Args.Result := ResultText;               // "applied|layers|start|finish"
+		End If;
+	End Sub PlanParamsFormOnCommand;
+
+	// Начало плана (по умолчанию — окончание периода недоступности)
+	Sub SetPlanStart(S: String);
+	Var
+		D: DateTime;
+	Begin
+		PendingStart := String.Trim(S);
+		If IsNull(StartDatePicker) Then
+			Return;
+		End If;
+		Try
+			D := UnvVarToDate(PendingStart);
+			StartDatePicker.CurrentDate := D;
+			StartTimePicker.CurrentDate := D;
+		Except On e: Exception Do
+			Debug.WriteLine("Параметры плана: начало — " + e.Message);
+		End Try;
+	End Sub SetPlanStart;
+
+	Sub SetPlanLayers(S: String);
+	Begin
+		PendingLayers := String.Trim(S);
+		If IsNull(LayersEditBox) Then
+			Return;
+		End If;
+		LayersEditBox.Text := PendingLayers;
+	End Sub SetPlanLayers;
+
+	Sub SetPlanFinish(S: String);
+	Var
+		D: DateTime;
+	Begin
+		PendingFinish := String.Trim(S);
+		If IsNull(FinishDatePicker) Then
+			Return;
+		End If;
+		Try
+			D := UnvVarToDate(PendingFinish);
+			FinishDatePicker.CurrentDate := D;
+			FinishTimePicker.CurrentDate := D;
+		Except On e: Exception Do
+			Debug.WriteLine("Параметры плана: окончание — " + e.Message);
+		End Try;
+	End Sub SetPlanFinish;
+
+	// «Пересчитать» — запоминаем параметры (окно закрывает пользователь крестиком заголовка)
+	Sub ApplyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		S: String;
+	Begin
+		Try
+			PlanStart := ComposeDateAndTime(StartDatePicker.CurrentDate, StartTimePicker.CurrentDate);
+			Layers := UnvVarToInt(LayersEditBox.Text);
+			If Layers < 1 Then
+				Layers := 1;
+			End If;
+			Applied := True;
+			S := "Принято: слоёв " + Layers.ToString + ", начало " + PlanStart.ToString;
+			If FinishCheck.Checked Then
+				FinishAt := ComposeDateAndTime(FinishDatePicker.CurrentDate, FinishTimePicker.CurrentDate);
+				S := S + ", окончание " + FinishAt.ToString + " (слои уточнятся автоматически)";
+			End If;
+			S := S + ". Закройте окно — план будет пересчитан.";
+			If Not IsNull(LblHint) Then
+				LblHint.Text := S;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Параметры плана: применить — " + e.Message);
+			WinApplication.InformationBox("Не удалось прочитать параметры: " + e.Message);
+		End Try;
+	End Sub ApplyOnClick;
+
+	Sub CancelOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Applied := False;
+		If Not IsNull(LblHint) Then
+			LblHint.Text := "Отмена: план не изменится. Закройте окно крестиком заголовка.";
+		End If;
+	End Sub CancelOnClick;
+
+	// Ответ вызывающей стороне: "applied|layers|start|finish" (finish пусто — флажок окончания снят)
+	Function ResultText: String;
+	Begin
+		If Not Applied Then
+			Return "0|-|-|-";
+		End If;
+		If FinishCheck.Checked Then
+			FinishAt := ComposeDateAndTime(FinishDatePicker.CurrentDate, FinishTimePicker.CurrentDate);
+			Return "1|" + Layers.ToString + "|" + PlanStart.ToString + "|" + FinishAt.ToString;
+		End If;
+		Return "1|" + Layers.ToString + "|" + PlanStart.ToString + "|";
+	End Function ResultText;
+
+	Function ScreenSpecText: String;
+	Begin
+		Return
+			"LABEL;LblCapStart;Начало плана (по умолчанию — окончание периода недоступности):;16;14;520;20;" + #13 + #10
+			+ "PICKER;StartDatePicker;;16;38;200;26;" + #13 + #10
+			+ "PICKER;StartTimePicker;;226;38;120;26;" + #13 + #10
+			+ "LABEL;LblCapLayers;Число слоёв (сколько задач выполняется одновременно):;16;74;520;20;" + #13 + #10
+			+ "EDIT;LayersEditBox;;16;98;120;26;" + #13 + #10
+			+ "CHECK;FinishCheck;Уложиться в желаемое окончание (слои посчитаются автоматически);16;134;520;22;" + #13 + #10
+			+ "LABEL;LblCapFinish;Желаемое окончание:;16;164;520;20;" + #13 + #10
+			+ "PICKER;FinishDatePicker;;16;188;200;26;" + #13 + #10
+			+ "PICKER;FinishTimePicker;;226;188;120;26;" + #13 + #10
+			+ "LABEL;LblHint;;16;222;520;40;" + #13 + #10
+			+ "BUTTON;BtnApply;Пересчитать;16;272;200;30;ApplyOnClick" + #13 + #10
+			+ "BUTTON;BtnCancel;Отмена;226;272;160;30;CancelOnClick";
+	End Function ScreenSpecText;
+End Class PLANPARAMSForm;

@@ -1,0 +1,2551 @@
+// ID: FOREDITOR  // идентификатор объекта на стенде (инструмент деплоя ищет объект по нему; класс формы = <Id> + Form)
+// ===========================================================================================
+// ПРОЕКТ «РЕДАКТОР FORE» — ЭТАП 1: КАРКАС.
+// ===========================================================================================
+// Что умеет (этап 1):
+//   * список слева — объекты сборки (репозиторий) ИЛИ локальные файлы .fore (папка), переключается;
+//   * открытие объекта/файла в Memo (UTF-8 без BOM, переводы строк приводятся к CRLF);
+//   * сохранение: в репозиторий (IModule.Text + Save) и в файл (UTF-8 с самопроверкой);
+//   * поиск «далее» (без учёта регистра, с показом строки-фрагмента) и «заменить всё»;
+//   * переход к строке — через панель фрагмента (запись SelStart в этом рантайме не работает, см. docs/EDITOR-TZ.md);
+//   * строка статуса (таймер): источник, строк, символов, признак изменений, позиция курсора.
+// Проверено на стенде (отчёты спайка 17.09.2026): IForeServices/GetRuntime, CheckCompiled/BindToAssembly,
+//   IForeAssembly/IForeClass/IForeSub (символы сборки), Memo: 107 КБ, чтение выделения и запись SelText.
+// Ограничения: запись SelStart не работает (переход к строке — через список/панель фрагмента); Ctrl+S
+//   требует обработки OnKeyDown — пока кнопка «Сохранить» (следующий шаг).
+// Дальше (этапы 2–5): структура файла, список проблем (линтер), автодополнение (docs/forsite/api-index.txt),
+//   кнопка «Скомпилировать сборку» (CheckCompiled) — см. docs/EDITOR-TZ.md.
+// Проверка: node tools/fore-lint-check.js Fore  → ожидается 0 предупреждений.
+// ===========================================================================================
+
+// ===========================================================================================
+// ПАЛИТРА КАРТЫ СТРОК (этап 3). Цвета в Memo/списках платформы недоступны, поэтому роли строк
+// помечаем ASCII-маркерами (гарантированно отображаются любым шрифтом; при желании заменяются
+// на ■ ▶ // и т. п. — это единственное место, где они заданы).
+// ===========================================================================================
+Const
+	MAP_CODE = ".";        // обычная строка кода
+	MAP_COMMENT = "//";    // комментарий
+	MAP_DECL = "D";        // объявление: Class/Sub/Function/Const/Var
+	MAP_BLOCK = "B";       // блок или ветка: If/Else/Try/Except/For/While/Case/Begin/End
+	MAP_TEXT = "T";        // строка содержит текстовый литерал
+	MAP_CONT = "+";        // продолжение предыдущей строки (начинается с «+» или с кавычки)
+	MAP_EMPTY = "-";       // пустая строка
+	MAP_PROBLEM = "!";     // строка, отмеченная линтером (см. панель «Проблемы»)
+
+// --- Строка списка: объект репозитория ИЛИ локальный файл ---
+Class CEditorRow: Object
+	Public Name: String;                         // Id объекта или имя файла
+	Public Kind: String;                         // «форма» / «модуль» / «файл»
+	Public Desc: IMetabaseObjectDescriptor;      // объект репозитория (для файлов — Null)
+	Public Path: String;                         // полный путь (для файлов)
+End Class CEditorRow;
+
+// --- Строка списка «Структура» или «Проблемы»: текст, вид и номер строки ---
+Class CLintRow: Object
+	Public Name: String;                         // что показываем в первой колонке
+	Public Kind: String;                         // «класс» / «подпрограмма» / «константа» / правило линтера
+	Public Line: Integer;                        // номер строки (1-based) для перехода
+End Class CLintRow;
+
+Class FOREDITORForm: Form
+	// --- настройки ---
+	CRLF_: String;
+	LF_: String;
+	CR_: String;
+	Q_: String;                                  // символ кавычки для проверок (берём кодом #34, а не литералом)
+	DEFAULT_ASM: String;
+	DEFAULT_FOLDER: String;
+	LayoutK: Double;
+	Map_: SortedList;
+	// --- контролы (создаются фабрикой по описанию) ---
+	AsmEdit: EditBox;
+	FolderEdit: EditBox;
+	BtnRepo: Button;
+	BtnFolder: Button;
+	BtnRefresh: Button;
+	BtnOpen: Button;
+	BtnSaveRepo: Button;
+	BtnSaveFile: Button;
+	BtnFindNext: Button;
+	BtnReplaceAll: Button;
+	BtnGoLine: Button;
+	BtnNumbers: Button;                          // «Номера строк»: пронумерованное окно в журнал
+	LastRefLine: Integer;                        // последняя строка, к которой переходили (для кнопки номеров)
+	// --- этап 5: компиляция из редактора и переключатели доп. функционала ---
+	BtnCompile: Button;                          // «Сохранить и скомпилировать»
+	BtnCompileState: Button;                     // «Состояние сборки (CheckCompiled)»
+	ExtraMap: Boolean;                           // ЧК «Карта строк»
+	ExtraStruct: Boolean;                        // ЧК «Структура»
+	ExtraProblems: Boolean;                      // ЧК «Проблемы (линтер)»
+	ExtraAuto: Boolean;                          // ЧК «Автообновление панелей»
+	ExtraCyr: Boolean;                           // ЧК «Кириллица: исправлять при чтении»
+	CyrOn: Boolean;                              // текст в окне сейчас в перекодированном виде?
+	CyrWant: Boolean;                            // чего хочет флажок (для ручного переключения)
+	OrigRepoText: String;                        // текст из репозитория как получен (для возврата)
+	ByteTab: String;                             // таблица «символ → код» (Char.Chr(1..255), IndexOf)
+	// --- этап 4: подсказки (автодополнение) ---
+	BtnHint: Button;                             // «Подсказки (в журнал)»
+	BtnInsert: Button;                           // «Вставить подсказку №»
+	InsEdit: EditBox;                            // поле номера подсказки
+	HintList: ArrayList;                         // слова-кандидаты последнего запроса подсказок
+	// --- этап 6: мост для агента (через файлы) ---
+	BtnAgentCtx: Button;                         // «Агент: контекст → файл»
+	BtnAgentApply: Button;                       // «Агент: правка ← файл»
+	BtnLintText: Button;
+	BtnLintAll: Button;
+	FindEdit: EditBox;
+	ReplEdit: EditBox;
+	LineEdit: EditBox;
+	CodeMemo: Memo;
+	FragMemo: Memo;
+	StatusLabel: Label;
+	TmrTick: Timer;
+	ObjectList: ListView;                        // создаётся кодом (в описании экрана нет LISTVIEW)
+	StructureList: ListView;                     // структура файла: классы/подпрограммы/константы
+	ProblemsList: ListView;                      // проблемы (линтер): строка + правило
+	MapList: ListView;                           // карта строк: номер + маркер роли/проблемы
+	StructRows: ArrayList;                       // CLintRow — строки структуры
+	ProbRows: ArrayList;                         // CLintRow — строки проблем
+	MapRows: ArrayList;                          // CLintRow — строки карты (Name = маркер, Line = номер)
+	ProbLines: ArrayList;                        // Integer — номера строк с проблемами (для карты)
+	LastStructLen: Integer;                      // длина текста на момент последнего разбора структуры
+	// --- состояние ---
+	Mode: String;                                // «REPO» или «FOLDER»
+	Rows: ArrayList;                             // CEditorRow — строки списка
+	CurName: String;                             // что открыто (Id объекта или имя файла)
+	CurPath: String;                             // путь файла (если открыт файл)
+	CurDesc: IMetabaseObjectDescriptor;          // объект репозитория (если открыт объект)
+	SavedText: String;                           // текст на момент последнего сохранения
+	FoundPos: Integer;                           // позиция последнего «Найти далее»
+	LastFind: String;                            // что искали в прошлый раз
+
+	// ===========================================================================================
+	// Описание экрана (создаётся фабрикой: UiCreateScaled + UiSpecsFromText)
+	// ===========================================================================================
+	Function ScreenSpecText: String;
+	Begin
+		Return "LABEL;LblAsm;Сборка (Id):;16;12;90;20;" + #13 + #10
+			+ "EDIT;AsmEdit;;110;8;260;28;" + #13 + #10
+			+ "BUTTON;BtnRepo;Список: сборка;380;8;190;28;SetRepoModeOnClick" + #13 + #10
+			+ "EDIT;FolderEdit;;580;8;520;28;" + #13 + #10
+			+ "BUTTON;BtnFolder;Список: папка;1110;8;150;28;SetFolderModeOnClick" + #13 + #10
+			+ "BUTTON;BtnRefresh;Обновить;1270;8;114;28;RefreshListOnClick" + #13 + #10
+			+ "MEMO;CodeMemo;;450;48;820;560;" + #13 + #10
+			+ "BUTTON;BtnOpen;Открыть;16;616;180;30;OpenSelectedOnClick" + #13 + #10
+			+ "BUTTON;BtnSaveRepo;Сохранить в репозиторий;206;616;200;30;SaveToRepoOnClick" + #13 + #10
+			+ "BUTTON;BtnSaveFile;Сохранить в файл;416;616;200;30;SaveToFileOnClick" + #13 + #10
+			+ "BUTTON;BtnFindNext;Найти далее;626;616;170;30;FindNextOnClick" + #13 + #10
+			+ "BUTTON;BtnReplaceAll;Заменить всё;806;616;170;30;ReplaceAllOnClick" + #13 + #10
+			+ "BUTTON;BtnGoLine;Показать строку;986;616;120;30;GoLineOnClick" + #13 + #10
+			+ "BUTTON;BtnNumbers;Номера строк (окно);1116;616;268;30;NumbersOnClick" + #13 + #10
+			+ "BUTTON;BtnAgentCtx;Агент: контекст → файл;16;262;210;30;AgentContextOnClick" + #13 + #10
+			+ "BUTTON;BtnAgentApply;Агент: правка ← файл;232;262;204;30;AgentApplyOnClick" + #13 + #10
+			+ "EDIT;InsEdit;;16;306;70;26;" + #13 + #10
+			+ "BUTTON;BtnHint;Подсказки (в журнал);92;304;210;30;HintsOnClick" + #13 + #10
+			+ "BUTTON;BtnInsert;Вставить подсказку №;308;304;128;30;InsertHintOnClick" + #13 + #10
+			// Переключатели доп. функционала и компиляция (этап 5). Список «Структура» для этого
+			// укорочен до высоты 148 — ниже расположены чекбоксы и кнопки компиляции.
+			+ "CHECK;ChkMap;Карта строк;16;508;200;20;" + #13 + #10
+			+ "CHECK;ChkStruct;Структура (символы);222;508;214;20;" + #13 + #10
+			+ "CHECK;ChkProblems;Проблемы (линтер);16;530;200;20;" + #13 + #10
+			+ "CHECK;ChkAuto;Автообновление панелей;222;530;214;20;" + #13 + #10
+			+ "CHECK;ChkCyr;Кириллица: исправлять при чтении из репозитория;16;586;420;20;" + #13 + #10
+			+ "BUTTON;BtnCompile;Сохранить + компилировать;16;552;210;30;CompileOnClick" + #13 + #10
+			+ "BUTTON;BtnCompileState;Состояние сборки;232;552;204;30;CompileStateOnClick" + #13 + #10
+			+ "LABEL;LblFind;Найти:;16;656;60;20;" + #13 + #10
+			+ "EDIT;FindEdit;;80;652;260;26;" + #13 + #10
+			+ "LABEL;LblRepl;Заменить:;350;656;74;20;" + #13 + #10
+			+ "EDIT;ReplEdit;;428;652;256;26;" + #13 + #10
+			+ "LABEL;LblLine;Номер строки:;700;656;84;20;" + #13 + #10
+			+ "EDIT;LineEdit;;790;652;90;26;" + #13 + #10
+			+ "BUTTON;BtnLintText;Проверить (текст);890;648;250;30;LintTextOnClick" + #13 + #10
+			+ "BUTTON;BtnLintAll;Проверить сборку;1150;648;234;30;LintAllOnClick" + #13 + #10
+			+ "MEMO;FragMemo;;16;688;674;120;" + #13 + #10
+			+ "LABEL;StatusLabel;Готов.;16;816;1368;22;" + #13 + #10
+			+ "TIMER;TmrTick;;0;0;0;0;;1000";
+	End Function ScreenSpecText;
+
+	// ===========================================================================================
+	Sub FormOnCreate(Sender: Object; Args: IEventArgs);
+	Begin
+		LayoutK := 1.0;                          // при другом экране уменьшить (общий масштаб контролов)
+		CRLF_ := #13 + #10;
+		LF_ := #10;
+		CR_ := #13;
+		Q_ := #34;
+		DEFAULT_ASM := "UNVAIL_ASSEMBLY";
+		DEFAULT_FOLDER := "F:\Scheduler Tasks\Fore";
+		Mode := "REPO";
+		Rows := New ArrayList.Create;
+		StructRows := New ArrayList.Create;
+		ProbRows := New ArrayList.Create;
+		MapRows := New ArrayList.Create;
+		ProbLines := New ArrayList.Create;
+		LastStructLen := -1;
+		LastRefLine := 1;
+		ExtraMap := True;
+		ExtraStruct := True;
+		ExtraProblems := True;
+		ExtraAuto := True;
+		ExtraCyr := True;
+		CyrOn := False;
+		CyrWant := True;
+		OrigRepoText := "";
+		BuildByteTab;
+		HintList := New ArrayList.Create;
+		CurName := "";
+		CurPath := "";
+		CurDesc := Null;
+		SavedText := "";
+		FoundPos := 0;
+		LastFind := "";
+		Self.Width := Double.RoundInt(1400 * LayoutK);
+		Self.Height := Double.RoundInt(852 * LayoutK);
+		Self.Text := "Редактор Fore: этап 1 — каркас (объекты сборки и локальные файлы)";
+		CreateFormComponents;
+		Log("Редактор готов. Слева — список объектов сборки; кнопка «Список: папка» переключает на локальные .fore.");
+		Log("Двойной клик по строке (или «Открыть») — загрузить код в поле справа.");
+	End Sub FormOnCreate;
+
+	// ===========================================================================================
+	// Создание контролов: динамическая часть — фабрикой по описанию, список — кодом
+	// ===========================================================================================
+	Sub CreateFormComponents;
+	Var
+		Ctl: Button;
+		Col: IListViewColumn;
+	Begin
+		Map_ := UiCreateScaled(Self, UiSpecsFromText(ScreenSpecText), LayoutK);
+		Try
+			AsmEdit := UiFind(Map_, "AsmEdit");
+			FolderEdit := UiFind(Map_, "FolderEdit");
+			BtnRepo := UiFind(Map_, "BtnRepo");
+			BtnFolder := UiFind(Map_, "BtnFolder");
+			BtnRefresh := UiFind(Map_, "BtnRefresh");
+			BtnOpen := UiFind(Map_, "BtnOpen");
+			BtnSaveRepo := UiFind(Map_, "BtnSaveRepo");
+			BtnSaveFile := UiFind(Map_, "BtnSaveFile");
+			BtnFindNext := UiFind(Map_, "BtnFindNext");
+			BtnReplaceAll := UiFind(Map_, "BtnReplaceAll");
+			BtnGoLine := UiFind(Map_, "BtnGoLine");
+			FindEdit := UiFind(Map_, "FindEdit");
+			ReplEdit := UiFind(Map_, "ReplEdit");
+			LineEdit := UiFind(Map_, "LineEdit");
+			CodeMemo := UiFind(Map_, "CodeMemo");
+			FragMemo := UiFind(Map_, "FragMemo");
+			StatusLabel := UiFind(Map_, "StatusLabel");
+			TmrTick := UiFind(Map_, "TmrTick") As Timer;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: контролы не получены из карты фабрики — " + e.Message);
+		End Try;
+		// ⚠ ВАЖНО: фабрика экранов СОЗДАЁТ контролы, но события НЕ подписывает (см. заголовок
+		// UiFactory.fore: «подписка на события выполняется на стороне формы»). Поэтому подписываем
+		// каждую кнопку здесь — как в остальных формах проекта (UiFind + OnClick := <обработчик>).
+		Try
+			Ctl := UiFind(Map_, "BtnRepo") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := SetRepoModeOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnFolder") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := SetFolderModeOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnRefresh") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := RefreshListOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnOpen") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := OpenSelectedOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnSaveRepo") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := SaveToRepoOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnSaveFile") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := SaveToFileOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnFindNext") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := FindNextOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnReplaceAll") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := ReplaceAllOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnGoLine") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := GoLineOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnLintText") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := LintTextOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnLintAll") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := LintAllOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnNumbers") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := NumbersOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnCompile") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := CompileOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnCompileState") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := CompileStateOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnHint") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := HintsOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnInsert") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := InsertHintOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnAgentCtx") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := AgentContextOnClick;
+			End If;
+			Ctl := UiFind(Map_, "BtnAgentApply") As Button;
+			If Not IsNull(Ctl) Then
+				Ctl.OnClick := AgentApplyOnClick;
+			End If;
+			Log("Кнопки подписаны: список (сборка/папка), обновить, открыть, сохранение ×2, поиск, замена, строка.");
+		Except On e: Exception Do
+			Log("⚠ подписка кнопок не удалась: " + e.Message);
+		End Try;
+		// Memo с кодом: правка разрешена, переносов нет (важен номер строки), обе полосы прокрутки;
+		// панель фрагмента — только чтение (в неё пишем результаты поиска/перехода и сообщения)
+		Try
+			CodeMemo.ReadOnly := False;
+			CodeMemo.WordWrap := False;
+			CodeMemo.ScrollBars := ControlScrollStyle.Both;
+			FragMemo.ReadOnly := True;
+			FragMemo.WordWrap := False;
+			FragMemo.ScrollBars := ControlScrollStyle.Both;
+		Except On e: Exception do
+			Debug.WriteLine("Редактор: настройка Memo — " + e.Message);
+		End Try;
+		// Список объектов/файлов: обычный ListView (создаётся кодом — в описании экрана LISTVIEW нет)
+		Try
+			ObjectList := New ListView.Create;
+			ObjectList.Parent := Self;
+			ObjectList.Left := 16;
+			ObjectList.Top := 48;
+			ObjectList.Width := 420;
+			ObjectList.Height := 200;
+			ObjectList.Style := ListViewStyle.Report;
+			ObjectList.GridLines := True;
+			ObjectList.RowSelect := True;
+			ObjectList.ShowColumnHeaders := True;
+			ObjectList.ReadOnly := True;
+			Col := ObjectList.Columns.Add;
+			SetListColumn(Col, "Объект / файл", 250, True, TextAlignment.Left);
+			Col := ObjectList.Columns.Add;
+			SetListColumn(Col, "Тип", 140, False, TextAlignment.Left);
+			ObjectList.OnDblClick := ObjectListOnDblClick;      // двойной клик — открыть
+			// Структура файла (классы/подпрограммы/константы) — обычный ListView, создаётся кодом
+			StructureList := New ListView.Create;
+			StructureList.Parent := Self;
+			StructureList.Left := 16;
+			StructureList.Top := 356;
+			StructureList.Width := 420;
+			StructureList.Height := 148;
+			StructureList.Style := ListViewStyle.Report;
+			StructureList.GridLines := True;
+			StructureList.RowSelect := True;
+			StructureList.ShowColumnHeaders := True;
+			StructureList.ReadOnly := True;
+			Col := StructureList.Columns.Add;
+			SetListColumn(Col, "Символ", 210, True, TextAlignment.Left);
+			Col := StructureList.Columns.Add;
+			SetListColumn(Col, "Вид", 130, False, TextAlignment.Left);
+			Col := StructureList.Columns.Add;
+			SetListColumn(Col, "Строка", 60, False, TextAlignment.Left);
+			StructureList.OnClick := StructureListOnClick;       // клик — показать фрагмент этой строки
+			// Проблемы (результат линтера) — справа внизу, рядом с журналом
+			ProblemsList := New ListView.Create;
+			ProblemsList.Parent := Self;
+			ProblemsList.Left := 700;
+			ProblemsList.Top := 688;
+			ProblemsList.Width := 684;
+			ProblemsList.Height := 120;
+			ProblemsList.Style := ListViewStyle.Report;
+			ProblemsList.GridLines := True;
+			ProblemsList.RowSelect := True;
+			ProblemsList.ShowColumnHeaders := True;
+			ProblemsList.ReadOnly := True;
+			Col := ProblemsList.Columns.Add;
+			SetListColumn(Col, "Строка", 70, False, TextAlignment.Left);
+			Col := ProblemsList.Columns.Add;
+			SetListColumn(Col, "Что не так (линтер)", 590, True, TextAlignment.Left);
+			ProblemsList.OnClick := ProblemsListOnClick;         // клик — показать фрагмент проблемной строки
+			// Карта строк (этап 3): номер + маркер роли/проблемы — «подсветка» без цветов (их нет в списках)
+			MapList := New ListView.Create;
+			MapList.Parent := Self;
+			MapList.Left := 1280;
+			MapList.Top := 48;
+			MapList.Width := 104;
+			MapList.Height := 560;
+			MapList.Style := ListViewStyle.Report;
+			MapList.GridLines := False;
+			MapList.RowSelect := True;
+			MapList.ShowColumnHeaders := True;
+			MapList.ReadOnly := True;
+			Col := MapList.Columns.Add;
+			SetListColumn(Col, "№", 45, False, TextAlignment.Left);
+			Col := MapList.Columns.Add;
+			SetListColumn(Col, "Роль", 55, False, TextAlignment.Left);
+			MapList.OnClick := MapListOnClick;                   // клик — показать фрагмент строки
+			// ВАЖНО (замечание со стенда 1.126): отдельный Memo поверх редактора создавать нельзя —
+			// у рантайм-созданных контролов не срабатывает Visible := False, окно остаётся на месте
+			// редактора (только чтение), и ввод в редактор пропадает. Поэтому номера строк печатаются
+			// в журнал (кнопка «Номера строк»), а также есть колонка «№» в карте строк.
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: список не создан — " + e.Message);
+		End Try;
+		// Таймер статуса: раз в секунду обновляет подпись (строки, символы, изменения, курсор)
+		Try
+			If Not IsNull(TmrTick) Then
+				TmrTick.OnTimer := TimerTick;
+				UiSetTimerEnabled(Map_, "TmrTick", True);
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: таймер статуса — " + e.Message);
+		End Try;
+		AsmEdit.Text := DEFAULT_ASM;
+		FolderEdit.Text := DEFAULT_FOLDER;
+	End Sub CreateFormComponents;
+
+	// ===========================================================================================
+	// СПИСОК: заполнение (объекты сборки или локальные файлы) и выбор строки
+	// ===========================================================================================
+	Sub RefillList;
+	Var
+		MB: IMetabase;
+		AsmDesc: IMetabaseObjectDescriptor;
+		Descs: IMetabaseObjectDescriptors;
+		Desc: IMetabaseObjectDescriptor;
+		Row: CEditorRow;
+		Files: Array Of String;
+		I: Integer;
+	Begin
+		Try
+			ObjectList.Items.Clear;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: очистка списка — " + e.Message);
+		End Try;
+		Rows.Clear;
+		If Mode = "REPO" Then
+			Try
+				MB := MetabaseClass.Active;
+				AsmDesc := MB.ItemById(String.Trim(AsmEdit.Text));
+				Descs := AsmDesc.Children;
+				If Not IsNull(Descs) Then
+					For Each Desc In Descs Do
+						Row := New CEditorRow.Create;
+						Row.Name := Desc.Id As String;
+						Row.Kind := "модуль";
+						If Desc.ClassId = MetabaseObjectClass.KE_CLASS_FORM Then
+							Row.Kind := "форма";
+						End If;
+						Row.Desc := Desc;
+						AddRow(Row);
+					End For;
+				End If;
+				Log("Список сборки «" + String.Trim(AsmEdit.Text) + "»: объектов — " + Rows.Count.ToString);
+			Except On e: Exception Do
+				Log("⚠ сборка «" + String.Trim(AsmEdit.Text) + "» не открылась: " + e.Message);
+			End Try;
+		Else
+			Try
+				Files := Directory.GetFiles(String.Trim(FolderEdit.Text), "*.fore").ToArray;
+				I := 0;
+				While I <= Files.Length - 1 Do
+					Row := New CEditorRow.Create;
+					Row.Name := FileBaseName(Files[I]);
+					Row.Kind := "файл";
+					Row.Path := Files[I];
+					AddRow(Row);
+					I := I + 1;
+				End While;
+				Log("Файлов .fore в папке: " + Rows.Count.ToString);
+			Except On e: Exception Do
+				Log("⚠ папка не прочитана: " + e.Message + " — проверьте путь в поле сверху");
+			End Try;
+		End If;
+		UpdateStatus;
+	End Sub RefillList;
+
+	Sub AddRow(Row: CEditorRow);
+	Var
+		Item: IListViewItem;
+	Begin
+		If IsNull(Row) Then
+			Return;
+		End If;
+		Try
+			ObjectList.Items.Add(Row.Name);
+			Item := ObjectList.Items.Item(ObjectList.Items.Count - 1);
+			Item.ColumnText(1) := Row.Kind;
+			Rows.Add(Row);
+		Except On e: Exception Do
+			Log("⚠ строка не добавлена: " + e.Message);
+		End Try;
+	End Sub AddRow;
+
+	// Выбранная строка списка (SelectedItem, при необходимости — FocusedItem)
+	Function SelectedRow: CEditorRow;
+	Var
+		Item: IListViewItem;
+		Index: Integer;
+	Begin
+		Item := Null;
+		Try
+			Item := ObjectList.SelectedItem;
+			If IsNull(Item) Then
+				Item := ObjectList.FocusedItem;
+			End If;
+		Except On e: Exception Do
+			Item := Null;
+		End Try;
+		If IsNull(Item) Then
+			Return Null;
+		End If;
+		Index := Item.Index;
+		If (Index < 0) Or (Index >= Rows.Count) Then
+			Return Null;
+		End If;
+		Return Rows.Item(Index) As CEditorRow;
+	End Function SelectedRow;
+
+	// Имя файла с расширением (без пути)
+	Function FileNameOf(FullPath: String): String;
+	Var
+		S: String;
+		P: Integer;
+	Begin
+		S := FullPath;
+		P := S.IndexOf("\");
+		While P >= 0 Do
+			S := S.SubString(P + 1, S.Length - P - 1);
+			P := S.IndexOf("\");
+		End While;
+		Return S;
+	End Function FileNameOf;
+
+	// Имя файла без пути и расширения
+	Function FileBaseName(FullName: String): String;
+	Var
+		S: String;
+		P: Integer;
+	Begin
+		S := FullName;
+		P := S.IndexOf("\");
+		While P >= 0 Do
+			S := S.SubString(P + 1, S.Length - P - 1);
+			P := S.IndexOf("\");
+		End While;
+		P := S.IndexOf(".");
+		If P > 0 Then
+			S := S.SubString(0, P);
+		End If;
+		Return S;
+	End Function FileBaseName;
+
+	// ===========================================================================================
+	// ЭТАП 2: СТРУКТУРА ФАЙЛА (классы, подпрограммы, константы) — разбор по строкам
+	// ===========================================================================================
+	Sub ClearList(LV: ListView; Rows: ArrayList);
+	Begin
+		If IsNull(LV) Then
+			Return;
+		End If;
+		Try
+			LV.Items.Clear;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: очистка списка — " + e.Message);
+		End Try;
+		Rows.Clear;
+	End Sub ClearList;
+
+	// Индекс выбранной строки списка (-1, если ничего не выбрано)
+	Function ItemIndexOf(LV: ListView): Integer;
+	Var
+		Item: IListViewItem;
+	Begin
+		If IsNull(LV) Then
+			Return -1;
+		End If;
+		Item := Null;
+		Try
+			Item := LV.SelectedItem;
+			If IsNull(Item) Then
+				Item := LV.FocusedItem;
+			End If;
+		Except On e: Exception Do
+			Item := Null;
+		End Try;
+		If IsNull(Item) Then
+			Return -1;
+		End If
+		Return Item.Index;
+	End Function ItemIndexOf;
+
+	Sub RefillStructure;
+	Var
+		Rest, Line, Up: String;
+		Row: CLintRow;
+		Item: IListViewItem;
+		P, No: Integer;
+	Begin
+		ClearList(StructureList, StructRows);
+		Rest := CodeMemo.Text;
+		No := 1;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			Row := Null;
+			Up := String.ToUpper(Line);
+			If (Up.IndexOf("CLASS ") = 0) Or (Up.IndexOf("PUBLIC CLASS ") = 0) Then
+				Row := New CLintRow.Create;
+				Row.Kind := "класс";
+				Row.Name := Line;
+			Else
+				If (Up.IndexOf("SUB ") = 0) Or (Up.IndexOf("FUNCTION ") = 0) Then
+					Row := New CLintRow.Create;
+					Row.Kind := "подпрограмма";
+					Row.Name := Line;
+				Else
+					If Up.IndexOf("CONST") = 0 Then
+						Row := New CLintRow.Create;
+						Row.Kind := "константа";
+						Row.Name := Line;
+					End If;
+				End If;
+			End If;
+			If Not IsNull(Row) Then
+				Row.Line := No;
+				If Row.Name.Length > 70 Then
+					Row.Name := Row.Name.SubString(0, 70) + "…";
+				End If;
+				StructureList.Items.Add(Row.Name);
+				Item := StructureList.Items.Item(StructureList.Items.Count - 1);
+				Item.ColumnText(1) := Row.Kind;
+				Item.ColumnText(2) := Row.Line.ToString;
+				StructRows.Add(Row);
+			End If;
+			No := No + 1;
+		End While;
+		LastStructLen := CodeMemo.Text.Length;
+	End Sub RefillStructure;
+
+	Sub StructureListOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Index: Integer;
+		Row: CLintRow;
+	Begin
+		Index := ItemIndexOf(StructureList);
+		If (Index < 0) Or (Index >= StructRows.Count) Then
+			Return;
+		End If;
+		Row := StructRows.Item(Index) As CLintRow;
+		Frag("Символ «" + Row.Name + "» — строка " + Row.Line.ToString + ":");
+		ShowFrag(Row.Line, 3);
+		ScrollToPos(-1, Row.Line);
+	End Sub StructureListOnClick;
+
+	Sub ProblemsListOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Index: Integer;
+		Row: CLintRow;
+	Begin
+		Index := ItemIndexOf(ProblemsList);
+		If (Index < 0) Or (Index >= ProbRows.Count) Then
+			Return;
+		End If;
+		Row := ProbRows.Item(Index) As CLintRow;
+		Frag("Проблема (строка " + Row.Line.ToString + "): " + Row.Kind);
+		If Row.Line > 0 Then
+			ShowFrag(Row.Line, 3);
+			ScrollToPos(-1, Row.Line);
+		End If;
+	End Sub ProblemsListOnClick;
+
+	// ===========================================================================================
+	// ЭТАП 3: КАРТА СТРОК («подсветка» ролей строками-маркерами)
+	// ===========================================================================================
+	// Начинается ли строка с одного из префиксов списка («A ;B ;C» через «;»)
+	Function StartsWithAny(S, List: String): Boolean;
+	Var
+		Rest, W: String;
+		P: Integer;
+	Begin
+		Rest := List;
+		While Rest <> "" Do
+			P := Rest.IndexOf(";");
+			If P < 0 Then
+				W := Rest;
+				Rest := "";
+			Else
+				W := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + 1, Rest.Length - P - 1);
+			End If;
+			W := String.Trim(W);
+			If (W <> "") And (String.ToUpper(S).IndexOf(String.ToUpper(W)) = 0) Then
+				Return True;
+			End If;
+		End While;
+		Return False;
+	End Function StartsWithAny;
+
+	// Роль одной строки: комментарий / объявление / блок / текст / продолжение / пустая / код
+	Function LineRole(Line: String): String;
+	Var
+		T, Up, Strip: String;
+	Begin
+		T := String.Trim(Line);
+		If T = "" Then
+			Return MAP_EMPTY;
+		End If;
+		Up := String.ToUpper(T);
+		If Up.IndexOf("//") = 0 Then
+			Return MAP_COMMENT;
+		End If;
+		If Up.IndexOf("+") = 0 Then
+			Return MAP_CONT;
+		End If;
+		If Up.IndexOf(Q_) = 0 Then
+			Return MAP_CONT;
+		End If;
+		If StartsWithAny(Up, "CLASS ;PUBLIC CLASS ;SUB ;FUNCTION ;CONST;VAR;PUBLIC ") Then
+			Return MAP_DECL;
+		End If;
+		If StartsWithAny(Up, "IF ;ELSE;END IF;TRY;EXCEPT;END TRY;FOR ;END FOR;WHILE ;END WHILE;CASE;END CASE;BEGIN;END") Then
+			Return MAP_BLOCK;
+		End If;
+		Strip := WithoutStrings(Line);
+		If Strip <> Line Then
+			Return MAP_TEXT;                          // в строке есть текстовый литерал
+		End If;
+		Return MAP_CODE;
+	End Function LineRole;
+
+	// Есть ли строка No в списке проблем (номера храним строками — сравнение надёжное)
+	Function InProbLines(No: Integer): Boolean;
+	Var
+		I: Integer;
+	Begin
+		If IsNull(ProbLines) Then
+			Return False;
+		End If;
+		I := 0;
+		While I <= ProbLines.Count - 1 Do
+			If ProbLines.Item(I) = No.ToString Then
+				Return True;
+			End If;
+			I := I + 1;
+		End While;
+		Return False;
+	End Function InProbLines;
+
+	// Пересобрать карту строк: для каждой строки — номер и маркер роли (проблемные помечаются «!»)
+	Sub RefillMap;
+	Var
+		Rest, Line, Role: String;
+		Row: CLintRow;
+		Item: IListViewItem;
+		P, No: Integer;
+	Begin
+		ClearList(MapList, MapRows);
+		Rest := CodeMemo.Text;
+		No := 1;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			Role := LineRole(Line);
+			If InProbLines(No) Then
+				Role := MAP_PROBLEM;                  // проблема важнее роли строки
+			End If;
+			Row := New CLintRow.Create;
+			Row.Line := No;
+			Row.Name := Role;
+			MapList.Items.Add(No.ToString);
+			Item := MapList.Items.Item(MapList.Items.Count - 1);
+			Item.ColumnText(1) := Role;
+			MapRows.Add(Row);
+			No := No + 1;
+		End While;
+	End Sub RefillMap;
+
+	Sub MapListOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Index: Integer;
+		Row: CLintRow;
+	Begin
+		Index := ItemIndexOf(MapList);
+		If (Index < 0) Or (Index >= MapRows.Count) Then
+			Return;
+		End If;
+		Row := MapRows.Item(Index) As CLintRow;
+		Frag("Карта: строка " + Row.Line.ToString + ", маркер «" + Row.Name + "»");
+		ShowFrag(Row.Line, 3);
+		ScrollToPos(-1, Row.Line);
+	End Sub MapListOnClick;
+
+	// Позиция (индекс символа) начала строки N — нужна для попытки прокрутки редактора
+	Function PosOfLine(N: Integer): Integer;
+	Var
+		Rest, Line: String;
+		P, Pos_, No: Integer;
+	Begin
+		Pos_ := 0;
+		No := 1;
+		Rest := CodeMemo.Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			If No = N Then
+				Return Pos_;
+			End If;
+			Pos_ := Pos_ + Line.Length + CRLF_.Length;
+			No := No + 1;
+		End While;
+		Return -1;
+	End Function PosOfLine;
+
+	// Номер строки, выровненный по правому краю (4 знака)
+	Function Pad4(N: Integer): String;
+	Var
+		S: String;
+	Begin
+		S := N.ToString;
+		While S.Length < 4 Do
+			S := " " + S;
+		End While;
+		Return S;
+	End Function Pad4;
+
+	// Маркер строки для просмотра: «!» для проблем, иначе роль строки
+	Function NumberedMark(No: Integer; Line: String): String;
+	Begin
+		If InProbLines(No) Then
+			Return MAP_PROBLEM;
+		End If;
+		Return LineRole(Line);
+	End Function NumberedMark;
+
+	// Номера строк: печатаем пронумерованное окно в журнал. Отдельный Memo поверх редактора ставить
+	// нельзя (замечание со стенда 1.126): рантайм-созданный контрол не скрывается — Visible := False
+	// игнорируется, окно «только чтение» остаётся на месте редактора и ввод пропадает.
+	Sub PrintNumberedWindow(FromLine: Integer);
+	Var
+		Rest, Line, Out: String;
+		P, No, From_, To_, Total: Integer;
+	Begin
+		Total := CountOf(CodeMemo.Text, CRLF_) + 1;
+		From_ := FromLine - 12;
+		If From_ < 1 Then
+			From_ := 1;
+		End If;
+		To_ := From_ + 40;
+		If To_ > Total Then
+			To_ := Total;
+		End If;
+		Out := "Строки " + From_.ToString + "–" + To_.ToString + " из " + Total.ToString
+			+ " («>» — нужная строка. Маркеры: . код, // комментарий, D объявление, B блок, T текст,"
+			+ " + продолжение, - пусто, ! проблема)" + CRLF_;
+		No := 1;
+		Rest := CodeMemo.Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			If (No >= From_) And (No <= To_) Then
+				If No = FromLine Then
+					Out := Out + ">" + Pad4(No) + "  " + NumberedMark(No, Line) + "  " + Line + CRLF_;
+				Else
+					Out := Out + " " + Pad4(No) + "  " + NumberedMark(No, Line) + "  " + Line + CRLF_;
+				End If;
+			End If;
+			No := No + 1;
+		End While;
+		FragBlock(Out);
+	End Sub PrintNumberedWindow;
+
+	// Кнопка «Номера строк»: окно вокруг последней строки, к которой переходили
+	Sub NumbersOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		PrintNumberedWindow(LastRefLine);
+	End Sub NumbersOnClick;
+
+	// Печать блока в журнал без обрезки по «хвосту»: окно номеров должно влезать целиком
+	Sub FragBlock(Block: String);
+	Var
+		All: String;
+	Begin
+		All := FragMemo.Text + Block;
+		If All.Length > 9000 Then
+			All := All.SubString(All.Length - 9000, 9000);
+		End If;
+		Try
+			FragMemo.Text := All;
+			FragMemo.SelLength := FragMemo.Text.Length;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: журнал — " + e.Message);
+		End Try;
+	End Sub FragBlock;
+
+	// «Пролистать» редактор к позиции: фокус + SelLength/SelStart. Запись SelStart в этом рантайме
+	// может не работать (замеры 1.117) — тогда печатаем пронумерованное окно этой строки в журнал.
+	// Ничего поверх редактора не создаём: перекрытие ломает ввод (замечание 1.126).
+	Sub ScrollToPos(Pos, LineNo: Integer);
+	Var
+		Got: Integer;
+	Begin
+		LastRefLine := LineNo;
+		If Pos < 0 Then
+			Pos := PosOfLine(LineNo);
+		End If;
+		Got := -1;
+		Try
+			CodeMemo.SetFocus;                              // SetFocus — метод IControl, наследуется Memo
+			CodeMemo.SelLength := 0;
+			CodeMemo.SelStart := Pos;
+			Got := CodeMemo.SelStart;
+		Except On e: Exception Do
+			Frag("   ⚠ прокрутка: " + e.Message);
+			Got := -1;
+		End Try;
+		If Got = Pos Then
+			Frag("   редактор — на строке " + LineNo.ToString + " (позиция " + Pos.ToString + ")");
+		Else
+			Frag("   ⚠ поставить курсор не удалось (запросили " + Pos.ToString + ", получили "
+				+ Got.ToString + ") — строка " + LineNo.ToString + " напечатана ниже с номером");
+			PrintNumberedWindow(LineNo);
+		End If;
+	End Sub ScrollToPos;
+
+	// ===========================================================================================
+	// ЧЕКБОКСЫ «ДОП. ФУНКЦИОНАЛА» (этап 5)
+	// Панель «выключается» уводом за левый край формы. Почему не Visible: у контролов, созданных
+	// кодом, Visible := False не срабатывает (замечание со стенда 1.126 — из-за этого терялся ввод
+	// в редактор), а координаты работают надёжно.
+	// ===========================================================================================
+	// ===========================================================================================
+	// КОДИРОВКА ТЕКСТА ИЗ РЕПОЗИТОРИЯ (замечание со стенда 1.129: кириллица вида «ÐšÐ°Ñ€…»)
+	// Платформа отдаёт текст модуля как однобайтовые символы, коды которых равны БАЙТАМ UTF-8.
+	// Определяем по парам 0xD0/0xD1 («Ð»/«Ñ») и отсутствию настоящих кириллических букв, затем
+	// декодируем UTF-8 сами. Нужны только Char.Chr и String.IndexOf/SubString (проверено по справке).
+	// ===========================================================================================
+	// ===========================================================================================
+	// ЭТАП 4: ПОДСКАЗКИ (автодополнение)
+	// Слово перед курсором → список символов открытого текста (Class/Sub/Function/Const) в журнал →
+	// вставка выбранного номера через SelText (проверено замером: вставка работает, курсор остаётся).
+	// Позиция курсора читается через SelStart (на чтение он работает, на запись — нет, см. 1.117).
+	// ===========================================================================================
+	// Символ слова: A-Z a-z 0-9 _ . (коды берём через ByteTab — других средств в языке нет)
+	Function IsWordChar(Ch: String): Boolean;
+	Var
+		C: Integer;
+	Begin
+		C := ByteCodeOf(Ch);
+		If (C >= 48) And (C <= 57) Then
+			Return True;
+		End If;
+		If (C >= 65) And (C <= 90) Then
+			Return True;
+		End If;
+		If (C >= 97) And (C <= 122) Then
+			Return True;
+		End If;
+		If (C = 95) Or (C = 46) Then
+			Return True;
+		End If;
+		Return False;
+	End Function IsWordChar;
+
+	// Десятичное число из строки вручную (Integer.Parse в языке может отсутствовать): -1 — не число
+	Function DigitsToInt(S: String): Integer;
+	Var
+		I, C, N: Integer;
+	Begin
+		If S.Length = 0 Then
+			Return -1;
+		End If;
+		N := 0;
+		I := 0;
+		While I <= S.Length - 1 Do
+			C := ByteCodeOf(S.SubString(I, 1));
+			If (C >= 48) And (C <= 57) Then
+				N := (N * 10) + (C - 48);
+			Else
+				Return -1;
+			End If;
+			I := I + 1;
+		End While;
+		Return N;
+	End Function DigitsToInt;
+
+	// Слово слева от курсора (до 40 символов)
+	Function WordBeforeCaret: String;
+	Var
+		Pos, I: Integer;
+		Head, Ch, W: String;
+	Begin
+		Pos := 0;
+		Try
+			Pos := CodeMemo.SelStart;
+		Except On e: Exception Do
+			Pos := 0;
+		End Try;
+		If Pos <= 0 Then
+			Return "";
+		End If;
+		Head := CodeMemo.Text.SubString(0, Pos);
+		W := "";
+		I := Head.Length - 1;
+		While (I >= 0) And (W.Length < 40) Do
+			Ch := Head.SubString(I, 1);
+			If IsWordChar(Ch) Then
+				W := Ch + W;
+				I := I - 1;
+			Else
+				Return W;
+			End If;
+		End While;
+		Return W;
+	End Function WordBeforeCaret;
+
+	// Имя символа из строки объявления («Class X: Form» → X, «Sub X(...)» → X, «Const X = …» → X)
+	Function HintNameOf(Line: String): String;
+	Var
+		Up, Rest, Ch, Name: String;
+		P, I: Integer;
+	Begin
+		Name := "";
+		Line := String.Trim(Line);
+		Up := String.ToUpper(Line);
+		P := -1;
+		If Up.IndexOf("CLASS ") = 0 Then
+			P := 6;
+		End If;
+		If Up.IndexOf("SUB ") = 0 Then
+			P := 4;
+		End If;
+		If Up.IndexOf("FUNCTION ") = 0 Then
+			P := 9;
+		End If;
+		If Up.IndexOf("CONST ") = 0 Then
+			P := 6;
+		End If;
+		If P < 0 Then
+			Return "";
+		End If;
+		Rest := String.Trim(Line.SubString(P, Line.Length - P));
+		I := 0;
+		While (I <= Rest.Length - 1) And (Name.Length < 60) Do
+			Ch := Rest.SubString(I, 1);
+			If IsWordChar(Ch) Then
+				Name := Name + Ch;
+				I := I + 1;
+			Else
+				Return Name;
+			End If;
+		End While;
+		Return Name;
+	End Function HintNameOf;
+
+	// Подсказки по слову перед курсором: заполняет HintList и печатает нумерованный список в журнал
+	Sub HintsOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		W, S, Nm: String;
+		I, N: Integer;
+		Row: CLintRow;
+	Begin
+		HintList := New ArrayList.Create;                    // новый список кандидатов (Clear не используем)
+		W := WordBeforeCaret;
+		If W = "" Then
+			Log("Подсказки: поставьте курсор после 1–2 букв (или в конец слова) и нажмите снова");
+			Return;
+		End If;
+		If StructRows.Count = 0 Then
+			RefillStructure;                                 // панель структуры могла быть выключена
+		End If;
+		S := String.ToUpper(W);
+		Log("Подсказки для «" + W + "» — номер в поле и кнопка «Вставить подсказку №»:");
+		N := 0;
+		I := 0;
+		While (I <= StructRows.Count - 1) And (N < 30) Do
+			Row := StructRows.Item(I) As CLintRow;
+			Nm := HintNameOf(Row.Name);
+			If (Nm <> "") And (String.ToUpper(Nm).IndexOf(S) = 0) And (String.ToUpper(Nm) <> S) Then
+				N := N + 1;
+				HintList.Add(Nm);
+				Log("  " + N.ToString + ") " + Nm + "   — " + Row.Kind + " (строка "
+					+ Row.Line.ToString + ")");
+			End If;
+			I := I + 1;
+		End While;
+		If N = 0 Then
+			Log("  совпадений нет (собираются Class/Sub/Function/Const из открытого текста)");
+		Else
+			Log("  всего: " + N.ToString);
+		End If;
+	End Sub HintsOnClick;
+
+	// Вставка подсказки по номеру: SelLength := 0 + SelText — проверенно работающий способ вставки
+	Sub InsertHintOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		W: String;
+		N: Integer;
+	Begin
+		N := DigitsToInt(String.Trim(InsEdit.Text));
+		If (N < 1) Or (N > HintList.Count) Then
+			Log("⚠ номер подсказки: введите число от 1 до " + HintList.Count.ToString
+				+ " (сначала — кнопка «Подсказки (в журнал)»)");
+			Return;
+		End If;
+		W := HintList.Item(N - 1) As String;
+		Try
+			CodeMemo.SelLength := 0;
+			CodeMemo.SelText := W;                           // вставка в позицию курсора
+			Log("Подсказка вставлена: «" + W + "»");
+			UpdateStatus;
+		Except On e: Exception Do
+			Log("⚠ вставка подсказки: " + e.Message);
+		End Try;
+	End Sub InsertHintOnClick;
+
+	// ===========================================================================================
+	// ЭТАП 6: МОСТ ДЛЯ АГЕНТА (минимум для подключения). Обмен через файлы — без внешних зависимостей.
+	// «Контекст → файл»: задание + сведения об объекте + проблемы линтера + состояние компиляции +
+	// журнал + текст модуля между маркерами. «Правка ← файл»: ответ агента, отчёт «было/стало»,
+	// применение после подтверждения. Маркеры — функции (блок Const проекта не трогаем).
+	// ===========================================================================================
+	Function AgentMarkBegin: String;
+	Begin
+		Return "--- НАЧАЛО ТЕКСТА МОДУЛЯ (для агента) ---";
+	End Function AgentMarkBegin;
+
+	Function AgentMarkEnd: String;
+	Begin
+		Return "--- КОНЕЦ ТЕКСТА МОДУЛЯ ---";
+	End Function AgentMarkEnd;
+
+	// Строка N (1-based) из текста
+	Function NthLine(Text: String; N: Integer): String;
+	Var
+		Rest, Line: String;
+		P, No: Integer;
+	Begin
+		No := 1;
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			If No = N Then
+				Return Line;
+			End If;
+			No := No + 1;
+		End While;
+		Return "";
+	End Function NthLine;
+
+	// Текст между маркерами A и B (без самих маркеров); "" — маркеров нет
+	Function ExtractBetween(Text, A, B: String): String;
+	Var
+		P1, P2: Integer;
+	Begin
+		P1 := Text.IndexOf(A);
+		If P1 < 0 Then
+			Return "";
+		End If;
+		P1 := P1 + A.Length;
+		P2 := Text.IndexOf(B);
+		If P2 <= P1 Then
+			Return "";
+		End If;
+		Return Text.SubString(P1, P2 - P1);
+	End Function ExtractBetween;
+
+	// Убрать переводы строк в начале и конце (отступы внутри текста сохраняем)
+	Function TrimCrlf(Text: String): String;
+	Var
+		S: String;
+	Begin
+		S := Text;
+		While (S.Length > 0) And ((S.SubString(0, 1) = CR_) Or (S.SubString(0, 1) = LF_)) Do
+			S := S.SubString(1, S.Length - 1);
+		End While;
+		While (S.Length > 0) And ((S.SubString(S.Length - 1, 1) = CR_) Or (S.SubString(S.Length - 1, 1) = LF_)) Do
+			S := S.SubString(0, S.Length - 1);
+		End While;
+		Return S;
+	End Function TrimCrlf;
+
+	Function Shorten(S: String; N: Integer): String;
+	Begin
+		If S.Length > N Then
+			Return S.SubString(0, N) + "…";
+		End If;
+		Return S;
+	End Function Shorten;
+
+	// Отчёт «было/стало»: сколько строк, сколько отличаются по номерам, первые пять отличий
+	Function CompareLinesReport(Old, New: String): String;
+	Var
+		R, L1, L2: String;
+		I, N1, Diff_: Integer;
+	Begin
+		N1 := CountOf(Old, CRLF_) + 1;
+		Diff_ := 0;
+		R := "строк было " + N1.ToString + ", стало " + (CountOf(New, CRLF_) + 1).ToString + CRLF_;
+		I := 1;
+		While I <= N1 Do
+			L1 := NthLine(Old, I);
+			L2 := NthLine(New, I);
+			If L1 <> L2 Then
+				Diff_ := Diff_ + 1;
+				If Diff_ <= 5 Then
+					R := R + "  строка " + I.ToString + ":" + CRLF_
+						+ "    было:  " + Shorten(L1, 70) + CRLF_
+						+ "    стало: " + Shorten(L2, 70) + CRLF_;
+				End If;
+			End If;
+			I := I + 1;
+		End While;
+		R := R + "отличий по номерам строк: " + Diff_.ToString + CRLF_;
+		Return R;
+	End Function CompareLinesReport;
+
+	// Проблемы линтера (последняя проверка) — текстом, для файла контекста
+	Function ProblemsText: String;
+	Var
+		R: String;
+		I: Integer;
+		Row: CLintRow;
+	Begin
+		R := "";
+		I := 0;
+		While I <= ProbRows.Count - 1 Do
+			Row := ProbRows.Item(I) As CLintRow;
+			R := R + "строка " + Row.Line.ToString + ": " + Row.Kind + CRLF_;
+			I := I + 1;
+		End While;
+		If R = "" Then
+			R := "(проблем не найдено)" + CRLF_;
+		End If;
+		Return R;
+	End Function ProblemsText;
+
+	// Состояние сборки текстом (для файла контекста; в журнал не пишем)
+	Function CompileStatusText(AsmId: String): String;
+	Var
+		ForeService: IForeServices;
+		Runtime: IForeRuntime;
+		Bin: IForeAssemblyBinary;
+		R: String;
+	Begin
+		If AsmId = "" Then
+			Return "сборка не указана (поле «Сборка (Id)» пустое)" + CRLF_;
+		End If;
+		Try
+			ForeService := MetabaseClass.Active As IForeServices;
+			Runtime := ForeService.GetRuntime;
+		Except On e: Exception Do
+			Return "не удалось получить IForeRuntime: " + e.Message + CRLF_;
+		End Try;
+		Try
+			Bin := Runtime.ResolveAssembly(AsmId);
+		Except On e: Exception Do
+			Return "ResolveAssembly(«" + AsmId + "»): " + e.Message + CRLF_;
+		End Try;
+		R := "сборка: " + AsmId + CRLF_;
+		Try
+			If Bin.CheckCompiled Then
+				R := R + "CheckCompiled: True (ошибок компиляции нет)" + CRLF_;
+			Else
+				R := R + "CheckCompiled: False (в сборке есть ошибки)" + CRLF_;
+			End If;
+			R := R + "Version: " + Bin.Version + "   TimeStamp: " + Bin.TimeStamp.ToString + CRLF_;
+		Except On e: Exception Do
+			R := R + "свойства сборки: " + e.Message + CRLF_;
+		End Try;
+		Return R;
+	End Function CompileStatusText;
+
+	// «Агент: контекст → файл» — один UTF-8-файл со всем, что нужно агенту для работы
+	Sub AgentContextOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Dlg: FileSaveDialog;
+		FileName, DefName, DefDir, Body: String;
+		N: Integer;
+	Begin
+		If CodeMemo.Text = "" Then
+			Log("Агент: нечего выгружать — откройте модуль или файл");
+			Return;
+		End If;
+		DefName := String.Trim(CurName);
+		If DefName = "" Then
+			DefName := "module";
+		End If;
+		DefName := DefName + "-context.txt";
+		DefDir := String.Trim(FolderEdit.Text);
+		FileName := "";
+		Try
+			Dlg := New FileSaveDialog.Create;
+			Dlg.Filter := "Текст (*.txt)|*.txt|Все файлы (*.*)|*.*";
+			Dlg.DefaultExt := "txt";
+			Dlg.Title := "Куда выгрузить контекст для агента";
+			Dlg.OverwritePrompt := True;
+			If DefDir <> "" Then
+				Dlg.InitialDirectory := DefDir;
+			End If;
+			Dlg.FileName := DefName;
+			If Not Dlg.Execute Then
+				Log("Агент: выгрузка контекста отменена");
+				Return;
+			End If;
+			FileName := Dlg.FileName;
+		Except On e: Exception Do
+			Log("⚠ диалог сохранения контекста: " + e.Message);
+			Return;
+		End Try;
+		If String.Trim(FileName) = "" Then
+			Log("Агент: имя файла не задано");
+			Return;
+		End If;
+		N := LintText(CodeMemo.Text, True);                  // проблемы считаем на текущем тексте
+		Body := "=== КОНТЕКСТ ДЛЯ АГЕНТА (редактор Fore) ===" + CRLF_
+			+ "Объект: " + CurName + "   (файл: " + CurPath + ")" + CRLF_
+			+ "Сборка: " + String.Trim(AsmEdit.Text) + "   Режим списка: " + Mode + CRLF_
+			+ "Символов: " + CodeMemo.Text.Length.ToString + "   Строк: "
+			+ (CountOf(CodeMemo.Text, CRLF_) + 1).ToString + CRLF_
+			+ "Перекодировка кириллицы применена: " + FmtOnOff(CyrOn) + CRLF_ + CRLF_
+			+ "ЗАДАНИЕ ДЛЯ АГЕНТА: проверьте и, если нужно, поправьте текст модуля ниже и верните" + CRLF_
+			+ "его ЦЕЛИКОМ между маркерами «" + AgentMarkBegin + "» и «" + AgentMarkEnd + "»" + CRLF_
+			+ "в отдельном файле. Внутри маркеров — только текст модуля, без пояснений и нумерации." + CRLF_ + CRLF_
+			+ "=== ПРОБЛЕМЫ ЛИНТЕРА (" + N.ToString + ") ===" + CRLF_ + ProblemsText + CRLF_
+			+ "=== СОСТОЯНИЕ КОМПИЛЯЦИИ ===" + CRLF_ + CompileStatusText(String.Trim(AsmEdit.Text)) + CRLF_
+			+ "=== ЖУРНАЛ РЕДАКТОРА ===" + CRLF_ + FragMemo.Text + CRLF_
+			+ AgentMarkBegin + CRLF_ + CodeMemo.Text + CRLF_ + AgentMarkEnd + CRLF_;
+		If WriteTextFile(FileName, Body) Then
+			Log("Агент: контекст выгружен — " + FileName + " (" + Body.Length.ToString + " символов)");
+		Else
+			Log("⚠ Агент: контекст не записан — " + FileName);
+		End If;
+	End Sub AgentContextOnClick;
+
+	// «Агент: правка ← файл» — читает ответ агента, печатает отчёт «было/стало» и применяет текст
+	Sub AgentApplyOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Dlg: FileOpenDialog;
+		FileName, Raw, NewText, Msg: String;
+	Begin
+		FileName := "";
+		Try
+			Dlg := New FileOpenDialog.Create;
+			Dlg.Filter := "Ответ агента (*.txt)|*.txt|Все файлы (*.*)|*.*";
+			Dlg.Title := "Файл с текстом модуля от агента";
+			If Not Dlg.Execute Then
+				Log("Агент: применение правки отменено (файл не выбран)");
+				Return;
+			End If;
+			FileName := Dlg.FileName;
+		Except On e: Exception Do
+			Log("⚠ диалог открытия правки: " + e.Message);
+			Return;
+		End Try;
+		Raw := ReadTextFile(FileName);
+		If String.Trim(Raw) = "" Then
+			Log("⚠ Агент: файл пуст или не прочитан — " + FileName);
+			Return;
+		End If;
+		NewText := TrimCrlf(ExtractBetween(Raw, AgentMarkBegin, AgentMarkEnd));
+		If NewText = "" Then
+			Log("Агент: маркеры не найдены — беру файл целиком как текст модуля");
+			NewText := TrimCrlf(Raw);
+		End If;
+		If NewText = "" Then
+			Log("⚠ Агент: текст пустой — ничего не меняю");
+			Return;
+		End If;
+		Log("Агент: отчёт до применения:" + CRLF_ + CompareLinesReport(CodeMemo.Text, NewText));
+		Msg := "Применить текст из файла?" + CRLF_
+			+ "Было символов: " + CodeMemo.Text.Length.ToString
+			+ ", станет: " + NewText.Length.ToString + CRLF_
+			+ "Файл: " + FileName + CRLF_ + CRLF_
+			+ "Дальше: «Сохранить в репозиторий» или «Сохранить + компилировать».";
+		If Not WinApplication.ConfirmationBox(Msg) Then
+			Log("Агент: применение отменено пользователем");
+			Return;
+		End If;
+		CodeMemo.Text := NewText;
+		Log("Агент: текст из файла применён в редактор (символов: " + NewText.Length.ToString + ")");
+		Frag("   далее: «Сохранить в репозиторий» / «Сохранить + компилировать» — и отчёт компиляции");
+		UpdateStatus;
+	End Sub AgentApplyOnClick;
+
+	Sub BuildByteTab;
+	Var
+		I: Integer;
+	Begin
+		ByteTab := "";
+		I := 1;
+		While I <= 255 Do
+			ByteTab := ByteTab + Char.Chr(I);            // позиция 0 = код 1, поэтому «Index + 1»
+			I := I + 1;
+		End While;
+	End Sub BuildByteTab;
+
+	// Код символа (1..255) через таблицу ByteTab; -1 — символ вне однобайтового диапазона
+	Function ByteCodeOf(Ch: String): Integer;
+	Var
+		I: Integer;
+	Begin
+		I := ByteTab.IndexOf(Ch);
+		If I < 0 Then
+			Return -1;
+		End If;
+		Return I + 1;
+	End Function ByteCodeOf;
+
+	// Есть ли настоящие кириллические буквы (пробы по типовым: а, е, о, и, А, С)
+	Function HasRealCyr(Text: String): Boolean;
+	Begin
+		If Text.IndexOf(Char.Chr(1072)) >= 0 Then
+			Return True;
+		End If;
+		If Text.IndexOf(Char.Chr(1077)) >= 0 Then
+			Return True;
+		End If;
+		If Text.IndexOf(Char.Chr(1086)) >= 0 Then
+			Return True;
+		End If;
+		If Text.IndexOf(Char.Chr(1080)) >= 0 Then
+			Return True;
+		End If;
+		If Text.IndexOf(Char.Chr(1040)) >= 0 Then
+			Return True;
+		End If;
+		If Text.IndexOf(Char.Chr(1057)) >= 0 Then
+			Return True;
+		End If;
+		Return False;
+	End Function HasRealCyr;
+
+	// Похоже ли, что текст — это UTF-8-байты, показанные однобайтовыми символами («Ð…», «Ñ…»).
+	// Считаем пары «0xD0/0xD1 + 0x80..0xBF» (лидер + продолжение кириллицы в UTF-8). Четыре пары —
+	// уверенный признак: в обычном тексте (в т. ч. в CP1251) такие пары практически не встречаются.
+	Function LooksLikeMojibake(Text: String): Boolean;
+	Var
+		I, B0, B1, Pairs: Integer;
+	Begin
+		If Text.Length < 8 Then
+			Return False;
+		End If;
+		If HasRealCyr(Text) Then
+			Return False;                                // настоящая кириллица есть — не трогаем
+		End If;
+		Pairs := 0;
+		I := 0;
+		While (I <= Text.Length - 2) And (Pairs < 4) Do
+			B0 := ByteCodeOf(Text.SubString(I, 1));
+			If (B0 = 208) Or (B0 = 209) Then
+				B1 := ByteCodeOf(Text.SubString(I + 1, 1));
+				If (B1 >= 128) And (B1 <= 191) Then
+					Pairs := Pairs + 1;
+				End If;
+			End If;
+			I := I + 1;
+		End While;
+		If Pairs >= 4 Then
+			Return True;
+		End If;
+		Return False;
+	End Function LooksLikeMojibake;
+
+	// Декодирование UTF-8 из последовательности однобайтовых символов (1..4 байта на символ).
+	// Если встретили непарный байт или 4-байтный символ — откатываем и возвращаем текст как есть.
+	Function MojibakeToUnicode(Text: String): String;
+	Var
+		Res, Ch, Ch1, Ch2: String;
+		I, B0, B1, B2, CP: Integer;
+		Bad: Boolean;
+	Begin
+		If Text.Length > 400000 Then
+			Frag("   ⚠ текст слишком велик для перекодировки (" + Text.Length.ToString + " символов)");
+			Return Text;
+		End If;
+		Res := "";
+		Bad := False;
+		I := 0;
+		While (I <= Text.Length - 1) And (Not Bad) Do
+			Ch := Text.SubString(I, 1);
+			B0 := ByteCodeOf(Ch);
+			If B0 < 0 Then                                   // настоящий Unicode-символ — как есть
+				Res := Res + Ch;
+				I := I + 1;
+			Else
+				If B0 < 128 Then                             // ASCII — как есть
+					Res := Res + Ch;
+					I := I + 1;
+				Else
+					If (B0 >= 192) And (B0 <= 223) And (I + 1 <= Text.Length - 1) Then
+						Ch1 := Text.SubString(I + 1, 1);
+						B1 := ByteCodeOf(Ch1);
+						If B1 >= 0 Then
+							Res := Res + Char.Chr(((B0 - 192) * 64) + (B1 - 128));
+							I := I + 2;
+						Else
+							Bad := True;
+						End If;
+					Else
+						If (B0 >= 224) And (B0 <= 239) And (I + 2 <= Text.Length - 1) Then
+							Ch1 := Text.SubString(I + 1, 1);
+							Ch2 := Text.SubString(I + 2, 1);
+							B1 := ByteCodeOf(Ch1);
+							B2 := ByteCodeOf(Ch2);
+							If (B1 >= 0) And (B2 >= 0) Then
+								CP := ((B0 - 224) * 4096) + ((B1 - 128) * 64) + (B2 - 128);
+								Res := Res + Char.Chr(CP);
+								I := I + 3;
+							Else
+								Bad := True;
+							End If;
+						Else
+							Bad := True;                         // 4-байтные символы — не наш случай
+						End If;
+					End If;
+				End If;
+			End If;
+		End While;
+		If Bad Then
+			Frag("   ⚠ перекодировка прервана на позиции " + I.ToString + " — текст оставлен как есть");
+			Return Text;
+		End If;
+		Return Res;
+	End Function MojibakeToUnicode;
+
+	// Ручное переключение (флажок «Кириллица»): исправить текст или вернуть то, что отдал репозиторий
+	Sub CyrFixApply(Fix: Boolean);
+	Begin
+		If Fix = CyrOn Then
+			Return;
+		End If;
+		If OrigRepoText = "" Then
+			Log("Кириллица: открыт файл (не репозиторий) — перекодировка не требуется");
+			CyrOn := Fix;
+			Return;
+		End If;
+		If Fix Then
+			CodeMemo.Text := MojibakeToUnicode(CodeMemo.Text);
+			CyrOn := True;
+			Log("Кириллица: текст в окне перекодирован (UTF-8-байты → кириллица)");
+		Else
+			If CodeMemo.Text <> SavedText Then
+				Log("   ⚠ правки, сделанные в перекодированном виде, будут потеряны");
+			End If;
+			CodeMemo.Text := OrigRepoText;
+			CyrOn := False;
+			Log("Кириллица: возвращён текст в том виде, как его отдал репозиторий");
+		End If;
+		UpdateStatus;
+	End Sub CyrFixApply;
+
+	Sub ApplyExtras;
+	Begin
+		If IsNull(MapList) Or IsNull(StructureList) Or IsNull(ProblemsList) Then
+			Return;                                          // панели ещё не созданы
+		End If;
+		ReadExtras;
+		SetPanelX("Карта строк", MapList, 1280, ExtraMap);
+		SetPanelX("Структура", StructureList, 16, ExtraStruct);
+		SetPanelX("Проблемы", ProblemsList, 700, ExtraProblems);
+		If CyrWant <> CyrOn Then
+			CyrFixApply(CyrWant);                        // ручное переключение флажка «Кириллица»
+		End If;
+	End Sub ApplyExtras;
+
+	// Состояние чекбоксов → поля. Если контрола нет в описании экрана (форма ещё не перезалита),
+	// остаётся True — доп. функционал включён, как раньше.
+	Sub ReadExtras;
+	Var
+		Ctl: IControl;
+	Begin
+		Ctl := UiFind(Map_, "ChkMap");
+		If Not IsNull(Ctl) Then
+			ExtraMap := UiChecked(Map_, "ChkMap");
+		End If;
+		Ctl := UiFind(Map_, "ChkStruct");
+		If Not IsNull(Ctl) Then
+			ExtraStruct := UiChecked(Map_, "ChkStruct");
+		End If;
+		Ctl := UiFind(Map_, "ChkProblems");
+		If Not IsNull(Ctl) Then
+			ExtraProblems := UiChecked(Map_, "ChkProblems");
+		End If;
+		Ctl := UiFind(Map_, "ChkAuto");
+		If Not IsNull(Ctl) Then
+			ExtraAuto := UiChecked(Map_, "ChkAuto");
+		End If;
+		Ctl := UiFind(Map_, "ChkCyr");
+		If Not IsNull(Ctl) Then
+			ExtraCyr := UiChecked(Map_, "ChkCyr");
+		End If;
+		CyrWant := ExtraCyr;
+	End Sub ReadExtras;
+
+	Sub SetPanelX(Title: String; Panel: IControl; X: Integer; Show_: Boolean);
+	Var
+		NewX: Integer;
+	Begin
+		NewX := X;
+		If Not Show_ Then
+			NewX := -4000;                                   // «выключить»: панель за левым краем формы
+		End If;
+		If Panel.Left <> NewX Then
+			Panel.Left := NewX;                              // координаты у рантайм-контролов работают
+			Log("Панель «" + Title + "»: " + FmtOnOff(Show_));
+		End If;
+	End Sub SetPanelX;
+
+	Function FmtOnOff(Value: Boolean): String;
+	Begin
+		If Value Then
+			Return "включена";
+		End If;
+		Return "выключена";
+	End Function FmtOnOff;
+
+	// ===========================================================================================
+	// КОМПИЛЯЦИЯ ИЗ РЕДАКТОРА (этап 5, основная задача)
+	// BindToAssembly — это и есть момент компиляции сборки: при ошибках платформа сообщает их
+	// исключением (текст выводим в журнал/консоль). CheckCompiled — итог, Version/TimeStamp — что
+	// и когда собрано. Замеры спайка: у Bin.Version нельзя вызывать .ToString (падает).
+	// ===========================================================================================
+	Sub CompileOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		AsmId: String;
+	Begin
+		If Mode <> "REPO" Then
+			Log("⚠ компиляция — только для режима «Список: сборка»: укажите Id сборки и нажмите «Список: сборка»");
+			Return;
+		End If;
+		AsmId := String.Trim(AsmEdit.Text);
+		If AsmId = "" Then
+			Log("⚠ не указан Id сборки (поле «Сборка (Id)»)");
+			Return;
+		End If;
+		Log("=== Компиляция сборки «" + AsmId + "» ===");
+		If Not IsNull(CurDesc) Then
+			Try
+				SaveToRepoOnClick(Null, Null);               // иначе компилируется прежняя версия модуля
+			Except On e: Exception Do
+				Log("  ⚠ сохранение перед компиляцией: " + e.Message);
+			End Try;
+		Else
+			Log("  (открыт файл, а не модуль сборки: компилируется текущее содержимое репозитория)");
+		End If;
+		CompileReport(AsmId, True);
+	End Sub CompileOnClick;
+
+	Sub CompileStateOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		AsmId: String;
+	Begin
+		AsmId := String.Trim(AsmEdit.Text);
+		If AsmId = "" Then
+			Log("⚠ не указан Id сборки (поле «Сборка (Id)»)");
+			Return;
+		End If;
+		CompileReport(AsmId, False);                         // без повторной компиляции: только состояние
+	End Sub CompileStateOnClick;
+
+	Sub CompileReport(AsmId: String; DoBind: Boolean);
+	Var
+		ForeService: IForeServices;
+		Runtime: IForeRuntime;
+		Bin: IForeAssemblyBinary;
+		Assm: IForeAssembly;
+		Hidden: Array Of string;
+		S: String;
+		Compiled: Boolean;
+	Begin
+		Try
+			ForeService := MetabaseClass.Active As IForeServices;
+			Runtime := ForeService.GetRuntime;
+		Except On e: Exception Do
+			Log("⚠ не удалось получить IForeRuntime: " + e.Message);
+			Log("   (проверьте, что сборке формы доступна ссылка на сборку Fore)");
+			Return;
+		End Try;
+		If DoBind Then
+			Compiled := True;
+			Try
+				Assm := Runtime.BindToAssembly(AsmId);       // ← компиляция: ошибки прилетят исключением
+			Except On e: Exception Do
+				Compiled := False;
+				Log("✖ ОШИБКИ КОМПИЛЯЦИИ сборки «" + AsmId + "»:");
+				Log("   " + e.Message);
+				Log("   (полный список сообщений — в консоли среды разработки; панель «Проблемы» — наш линтер)");
+			End Try;
+			If Compiled Then
+				If IsNull(Assm) Then
+					Log("  ⚠ BindToAssembly вернул Null (сборка не отдана)");
+				Else
+					Log("  классы: " + Assm.ClassesCount.ToString + ", глобальные подпрограммы: "
+						+ Assm.SubsCount.ToString);
+				End If;
+			End If;
+		End If;
+		Try
+			Bin := Runtime.ResolveAssembly(AsmId);
+		Except On e: Exception Do
+			Log("  ⚠ ResolveAssembly(«" + AsmId + "»): " + e.Message);
+			Return;
+		End Try;
+		Try
+			If Bin.CheckCompiled Then
+				Log("  ✔ CheckCompiled = True — СБОРКА СКОМПИЛИРОВАНА БЕЗ ОШИБОК");
+			Else
+				Log("  ✖ CheckCompiled = False — В СБОРКЕ ЕСТЬ ОШИБКИ КОМПИЛЯЦИИ");
+			End If;
+			// ⚠ Bin.Version — не строка: .ToString на нём даёт ошибку (замеры спайка 1.117)
+			Log("  Version = " + Bin.Version + ", TimeStamp = " + Bin.TimeStamp.ToString
+				+ ", IsLoaded = " + Bin.IsLoaded.ToString);
+		Except On e: Exception Do
+			Log("  ⚠ свойства сборки: " + e.Message);
+		End Try;
+		Try
+			Hidden := Bin.HiddenReferences;
+			Log("  скрытых ссылок: " + Hidden.Length.ToString);
+			For Each S In Hidden Do
+				Log("    — " + S + " (собрано: " + Bin.GetReferenceTimeStamp(S).ToString + ")");
+			End For;
+		Except On e: Exception Do
+			Log("  ⚠ HiddenReferences: " + e.Message);
+		End Try;
+		Log("=== Компиляция: отчёт выше ===");
+	End Sub CompileReport;
+
+	// ===========================================================================================
+	// ЭТАП 2: ЛИНТЕР (порт правил tools/fore-lint-check.js на Fore) — панель «Проблемы»
+	// ===========================================================================================
+	// Считаем вхождения подстроки (для упрощённой проверки баланса блоков)
+	Function CountOf(Text, Sub_: String): Integer;
+	Var
+		Rest: String;
+		P, N: Integer;
+	Begin
+		N := 0;
+		Rest := Text;
+		P := Rest.IndexOf(Sub_);
+		While P >= 0 Do
+			N := N + 1;
+			Rest := Rest.SubString(P + Sub_.Length, Rest.Length - P - Sub_.Length);
+			P := Rest.IndexOf(Sub_);
+		End While;
+		Return N;
+	End Function CountOf;
+
+	// Строка без содержимого строковых литералов «…» (для проверок вне строк)
+	Function WithoutStrings(Line: String): String;
+	Var
+		Res, Ch: String;
+		I: Integer;
+		InStr: Boolean;
+	Begin
+		Res := "";
+		InStr := False;
+		I := 0;
+		While I <= Line.Length - 1 Do
+			Ch := Line.SubString(I, 1);
+			If Ch = Q_ Then
+				If InStr Then
+					InStr := False;
+				Else
+					InStr := True;
+				End If;
+			Else
+				If Not InStr Then
+					Res := Res + Ch;
+				End If;
+			End If;
+			I := I + 1;
+		End While;
+		Return Res;
+	End Function WithoutStrings;
+
+	// Имя класса из строки «[Public] Class X: Form»
+	Function ClassNameInLine(Line: String): String;
+	Var
+		P, E: Integer;
+	Begin
+		P := String.ToUpper(Line).IndexOf("CLASS ");
+		E := String.ToUpper(Line).IndexOf(": FORM");
+		If (P < 0) Or (E <= P) Then
+			Return "";
+		End If;
+		Return String.Trim(Line.SubString(P + 6, E - P - 6));
+	End Function ClassNameInLine;
+
+	// Ожидаемое имя класса формы: из директивы «// ID: <Ид>» (первые 30 строк) → «<Ид>Form»
+	Function FormClassNameExpected(Text: String): String;
+	Var
+		Rest, Line: String;
+		P, Idx: Integer;
+	Begin
+		Rest := Text;
+		Idx := 0;
+		While (Rest <> "") And (Idx < 30) Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			If String.ToUpper(Line).IndexOf("// ID:") = 0 Then
+				Line := String.Trim(Line.SubString(6, Line.Length - 6));
+				P := Line.IndexOf("//");
+				If P > 0 Then
+					Line := String.Trim(Line.SubString(0, P));
+				End If;
+				Return Line + "Form";
+			End If;
+			Idx := Idx + 1;
+		End While;
+		Return "";
+	End Function FormClassNameExpected;
+
+	// Добавить проблему в список (при Fill = True) и вернуть 1 (для счёта)
+	Function AddProblem(No: Integer; Rule: String; Fill: Boolean): Integer;
+	Var
+		Row: CLintRow;
+		Item: IListViewItem;
+	Begin
+		If Fill Then
+			Row := New CLintRow.Create;
+			Row.Line := No;
+			Row.Kind := Rule;
+			ProblemsList.Items.Add(No.ToString);
+			Item := ProblemsList.Items.Item(ProblemsList.Items.Count - 1);
+			Item.ColumnText(1) := Rule;
+			ProbRows.Add(Row);
+			If No > 0 Then
+				ProbLines.Add(No.ToString);             // для карты строк (маркер «!»)
+			End If;
+		End If;
+		Frag("⚠ строка " + No.ToString + ": " + Rule);
+		Return 1;
+	End Function AddProblem;
+
+	// Линтер: возвращает число найденных проблем (Fill = True — ещё и наполняет панель «Проблемы»)
+	Function LintText(Text: String; Fill: Boolean): Integer;
+	Var
+		Rest, Line, Up, Strip, Prev, Cls, Expected: String;
+		Cnt, No, P: Integer;
+		PendIf: Boolean;
+	Begin
+		Cnt := 0;
+		If Fill Then
+			ClearList(ProblemsList, ProbRows);
+			ProbLines.Clear;
+			Frag("--- Линтер: проверяю текст (" + Text.Length.ToString + " символов) ---");
+		End If;
+		// 1) упрощённый баланс блоков: сравниваем количество открытий и закрытий
+		Cnt := Cnt + AddProblem(0, "Begin — " + CountOf(Text, CRLF_ + "Begin" + CRLF_).ToString
+			+ ", «End» — " + CountOf(Text, CRLF_ + "End" + CRLF_).ToString + " (должно совпадать)", Fill);
+		Cnt := Cnt + AddProblem(0, "If — " + CountOf(Text, CRLF_ + "If ").ToString
+			+ ", «End If» — " + CountOf(Text, "End If").ToString, Fill);
+		Cnt := Cnt + AddProblem(0, "Try — " + CountOf(Text, CRLF_ + "Try" + CRLF_).ToString
+			+ ", Except — " + CountOf(Text, CRLF_ + "Except").ToString
+			+ ", «End Try» — " + CountOf(Text, "End Try").ToString, Fill);
+		Cnt := Cnt + AddProblem(0, "For — " + CountOf(Text, CRLF_ + "For ").ToString
+			+ ", «End For» — " + CountOf(Text, "End For").ToString, Fill);
+		Cnt := Cnt + AddProblem(0, "While — " + CountOf(Text, CRLF_ + "While ").ToString
+			+ ", «End While» — " + CountOf(Text, "End While").ToString, Fill);
+		Cnt := Cnt + AddProblem(0, "Sub — " + CountOf(Text, CRLF_ + "Sub ").ToString
+			+ ", «End Sub» — " + CountOf(Text, "End Sub ").ToString, Fill);
+		// 2) построчные правила
+		PendIf := False;
+		Prev := "";
+		No := 1;
+		Rest := Text;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := String.Trim(Rest);
+				Rest := "";
+			Else
+				Line := String.Trim(Rest.SubString(0, P));
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			Up := String.ToUpper(Line);
+			Strip := String.ToUpper(WithoutStrings(Line));
+			If (Up.IndexOf("IF ") = 0) And (Strip.IndexOf(" THEN") < 0) Then
+				PendIf := True;                              // условие записано на несколько строк
+			End If;
+			If Strip.IndexOf(" THEN") >= 0 Then
+				If PendIf Then
+					PendIf := False;
+				Else
+					If Up.IndexOf("ELSE") <> 0 Then
+						Cnt := Cnt + AddProblem(No, "«Then» без «If» (проверьте условие)", Fill);
+					End If;
+				End If;
+			End If;
+			If (Strip.IndexOf("'") >= 0) And (Line.IndexOf("//") <> 0) Then
+				Cnt := Cnt + AddProblem(No, "апостроф вне строкового литерала (в Fore строки только в кавычках)", Fill);
+			End If;
+			If (Strip.IndexOf("= NULL") >= 0) Or (Strip.IndexOf("<> NULL") >= 0) Then
+				Cnt := Cnt + AddProblem(No, "сравнение с Null — используйте IsNull(…)", Fill);
+			End If;
+			If (Line.IndexOf(Q_) = 0) And (Prev <> "") Then
+				If Prev.SubString(Prev.Length - 1, 1) <> "+" Then
+					Cnt := Cnt + AddProblem(No, "строка продолжения начинается с кавычки, а в конце предыдущей нет «+»", Fill);
+				End If;
+			End If;
+			If (Up.IndexOf("CLASS ") >= 0) And (Up.IndexOf(": FORM") > 0) Then
+				Cls := ClassNameInLine(Line);
+				Expected := FormClassNameExpected(Text);
+				If (Cls <> "") And (Expected <> "") Then
+					If String.ToUpper(Cls) <> String.ToUpper(Expected) Then
+						Cnt := Cnt + AddProblem(No, "класс формы «" + Cls + "», а по правилу нужен «" + Expected + "»", Fill);
+					End If;
+				End If;
+			End If;
+			If Line <> "" Then
+				Prev := Line;
+			End If;
+			No := No + 1;
+		End While;
+		If Fill Then
+			Frag("--- Линтер: проблем — " + Cnt.ToString + " ---");
+		End If;
+		Return Cnt;
+	End Function LintText;
+
+	Sub LintTextOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		N: Integer;
+	Begin
+		N := LintText(CodeMemo.Text, True);
+		RefillStructure;
+		RefillMap;
+		Frag("Структура: " + StructRows.Count.ToString + " записей (классы, подпрограммы, константы)");
+		Frag("Проверено: проблем — " + N.ToString + ". Клик по строке в «Проблемах» показывает фрагмент.");
+	End Sub LintTextOnClick;
+
+	Sub LintAllOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Row: CEditorRow;
+		Modul: IModule;
+		Text: String;
+		I, Total, Bad, N: Integer;
+	Begin
+		If Mode <> "REPO" Then
+			Frag("⚠ «Проверить сборку» работает в режиме «Список: сборка»");
+			Return;
+		End If;
+		ClearList(ProblemsList, ProbRows);
+		Frag("--- Линтер: проверяю все модули и формы выбранной сборки ---");
+		Total := 0;
+		Bad := 0;
+		I := 0;
+		While I <= Rows.Count - 1 Do
+			Row := Rows.Item(I) As CEditorRow;
+			Total := Total + 1;
+			Text := "";
+			Try
+				Modul := Row.Desc.Edit As IModule;
+				Text := Modul.Text;
+			Except On e: Exception Do
+				Text := "";
+			End Try;
+			If Text = "" Then
+				Bad := Bad + 1;
+				Frag("⚠ «" + Row.Name + "» не прочитан");
+			Else
+				N := LintText(Text, False);
+				Frag("«" + Row.Name + "» (" + Row.Kind + "): проблем — " + N.ToString);
+			End If;
+			I := I + 1;
+		End While;
+		Frag("--- Проверка сборки: объектов " + Total.ToString + ", не прочитано " + Bad.ToString + " ---");
+	End Sub LintAllOnClick;
+
+	// ===========================================================================================
+	// Кнопки-обработчики (привязка — в описании экрана) и открытие
+	// ===========================================================================================
+	Sub SetRepoModeOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Mode := "REPO";
+		Log("Источник списка: объекты сборки.");
+		RefillList;
+	End Sub SetRepoModeOnClick;
+
+	Sub SetFolderModeOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		Mode := "FOLDER";
+		Log("Источник списка: локальные файлы .fore из папки " + String.Trim(FolderEdit.Text));
+		RefillList;
+	End Sub SetFolderModeOnClick;
+
+	Sub RefreshListOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		RefillList;
+	End Sub RefreshListOnClick;
+
+	Sub OpenSelectedOnClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		OpenRow(SelectedRow);
+	End Sub OpenSelectedOnClick;
+
+	Sub ObjectListOnDblClick(Sender: Object; Args: IMouseEventArgs);
+	Begin
+		OpenRow(SelectedRow);
+	End Sub ObjectListOnDblClick;
+
+	Sub OpenRow(Row: CEditorRow);
+	Var
+		Modul: IModule;
+		Text: String;
+	Begin
+		If IsNull(Row) Then
+			Log("⚠ выберите объект или файл в списке слева");
+			Return;
+		End If;
+		OrigRepoText := "";                               // текст из репозитория (для флажка «Кириллица»)
+		CyrOn := False;
+		If String.Trim(Row.Path) = "" Then
+			Try
+				Modul := Row.Desc.Edit As IModule;
+				Text := Modul.Text;
+				// Кодировка (замечание со стенда 1.129): платформа может отдать текст как однобайтовые
+				// символы, коды которых равны байтам UTF-8 («ÐšÐ°Ñ€…») — тогда декодируем сами.
+				OrigRepoText := Text;
+				If CyrWant And LooksLikeMojibake(Text) Then
+					Log("Кодировка: похоже на UTF-8-байты — декодирую (символов: "
+						+ Text.Length.ToString + ")");
+					Text := MojibakeToUnicode(Text);
+					CyrOn := True;
+					Log("Кодировка: после декодирования символов " + Text.Length.ToString);
+				Else
+					Log("Кодировка: перекодировка не потребовалась");
+				End If;
+			Except On e: Exception Do
+				Log("⚠ код объекта «" + Row.Name + "» не прочитан: " + e.Message);
+				Return;
+			End Try;
+			CurDesc := Row.Desc;
+			CurPath := "";
+		Else
+			Text := ReadTextFile(Row.Path);
+			If Text = "" Then
+				Log("⚠ файл пуст или не прочитан: " + Row.Path);
+			End If;
+			CurDesc := Null;
+			CurPath := Row.Path;
+		End If;
+		CurName := Row.Name;
+		CodeMemo.Text := Text;
+		SavedText := Text;
+		FoundPos := 0;
+		LastFind := "";
+		RefillStructure;                                         // структура — сразу после открытия
+		RefillMap;                                               // и карта строк
+		Frag("Открыт «" + Row.Name + "» (" + Row.Kind + "): " + Text.Length.ToString + " символов");
+		UpdateStatus;
+	End Sub OpenRow;
+
+	Sub SaveToRepoOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Modul: IModule;
+		Again: String;
+	Begin
+		If IsNull(CurDesc) Then
+			Log("⚠ чтобы сохранить в репозиторий, откройте объект сборки («Список: сборка»), а не файл");
+			Return;
+		End If;
+		Try
+			Modul := CurDesc.Edit As IModule;
+			Modul.Text := CodeMemo.Text;
+			If Modul.Modified Then
+				(Modul As IMetabaseObject).Save;
+			End If;
+			SavedText := CodeMemo.Text;
+			Log("Сохранено в репозиторий: «" + CurName + "» (" + SavedText.Length.ToString + " символов)");
+			// Проверка кодировки после записи: читаем модуль обратно и сравниваем длину. Если платформа
+			// пишет текст в другой кодировке, кириллица теряется — узнаём об этом сразу, а не «потом».
+			Try
+				Again := (CurDesc.Edit As IModule).Text;
+				If Again.Length <> SavedText.Length Then
+					Log("   ⚠ в репозитории " + Again.Length.ToString + " символов вместо "
+						+ SavedText.Length.ToString + " — вероятна потеря символов при перекодировке"
+						+ " (сохраните копию в файл!)");
+				Else
+					Log("   проверка записи: длина совпала (" + Again.Length.ToString + " символов)");
+				End If;
+			Except On e: Exception Do
+				Log("   ⚠ проверка чтения после сохранения: " + e.Message);
+			End Try;
+			UpdateStatus;
+		Except On e: Exception Do
+			Log("⚠ не сохранено в репозиторий: " + e.Message);
+		End Try;
+	End Sub SaveToRepoOnClick;
+
+	Sub SaveToFileOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		Dlg: FileSaveDialog;
+		FileName, DefName, DefDir: String;
+	Begin
+		// Где сохранять по умолчанию: если открыт файл (или уже сохраняли) — папка и имя этого файла,
+		// иначе — папка из поля сверху и имя «<Открытое>.fore» (для объекта сборки).
+		DefName := "";
+		DefDir := "";
+		If String.Trim(CurPath) <> "" Then
+			DefName := FileNameOf(CurPath);
+			Try
+				DefDir := Path.GetDirectoryName(CurPath);
+			Except On e: Exception Do
+				DefDir := "";
+			End Try;
+		Else
+			DefName := String.Trim(CurName);
+			If DefName = "" Then
+				DefName := "module";
+			End If;
+			DefName := DefName + ".fore";
+			DefDir := String.Trim(FolderEdit.Text);
+		End If;
+		Try
+			Dlg := New FileSaveDialog.Create;              // невизуальный компонент (как FileOpenDialog)
+			Dlg.Filter := "Модули Fore (*.fore)|*.fore|Все файлы (*.*)|*.*";
+			Dlg.DefaultExt := "fore";
+			Dlg.Title := "Сохранить код в файл";
+			Dlg.OverwritePrompt := True;
+			If DefDir <> "" Then
+				Dlg.InitialDirectory := DefDir;
+			End If;
+			Dlg.FileName := DefName;
+			// ⚠ у диалога Execute вызывается БЕЗ параметров и БЕЗ скобок (как в инструменте деплоя)
+			If Not Dlg.Execute Then
+				Log("Сохранение в файл отменено.");
+				Return;
+			End If;
+			FileName := Dlg.FileName;
+		Except On e: Exception Do
+			Log("⚠ диалог сохранения не открылся: " + e.Message);
+			Return;
+		End Try;
+		If String.Trim(FileName) = "" Then
+			Log("Сохранение отменено: имя файла не задано.");
+			Return;
+		End If;
+		If WriteTextFile(FileName, CodeMemo.Text) Then
+			CurPath := FileName;                          // дальше «Сохранить в файл» предложит этот же путь
+			SavedText := CodeMemo.Text;
+			Log("Сохранено в файл: " + FileName + " (" + SavedText.Length.ToString + " символов)");
+			UpdateStatus;
+		End If;
+	End Sub SaveToFileOnClick;
+
+	// ===========================================================================================
+	// Файлы: чтение (UTF-8, переводы строк → CRLF) и запись (UTF-8 + самопроверка)
+	// ===========================================================================================
+	Function ReadTextFile(FullPath: String): String;
+	Var
+		Reader: ITextReader;
+		Text, Norm: String;
+	Begin
+		If Not File.Exists(FullPath) Then
+			Log("⚠ файла нет: " + FullPath);
+			Return "";
+		End If;
+		Try
+			Reader := File.OpenTextReader(FullPath);
+			Try
+				Reader.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Debug.WriteLine("Редактор: кодировка чтения — " + e.Message);
+			End Try;
+			If Reader.Eof Then
+				Return "";
+			End If;
+			Text := Reader.ReadToEnd;
+		Except On e: Exception Do
+			Log("⚠ файл не прочитан: " + FullPath + " — " + e.Message);
+			Return "";
+		End Try;
+		Norm := String.Replace(Text, CRLF_, LF_);
+		Norm := String.Replace(Norm, CR_, LF_);
+		Norm := String.Replace(Norm, LF_, CRLF_);
+		Return Norm;
+	End Function ReadTextFile;
+
+	Function WriteTextFile(FullPath, Text: String): Boolean;
+	Var
+		Writer: ITextWriter;
+		Back: String;
+	Begin
+		Try
+			Writer := File.OpenTextWriter(FullPath, False);
+			Try
+				Writer.Encoding := CodePage.UTF8;
+			Except On e: Exception Do
+				Log("⚠ кодировку UTF-8 задать не удалось: " + e.Message);
+			End Try;
+			Writer.WriteString(Text);
+			Writer.Flush;
+		Except On e: Exception Do
+			Log("⚠ файл не записан: " + FullPath + " — " + e.Message);
+			Return False;
+		End Try;
+		Back := ReadTextFile(FullPath);
+		If String.Replace(Back, CRLF_, "") <> String.Replace(Text, CRLF_, "") Then
+			Log("⚠ текст при обратном чтении не совпал (кодировка?) — " + FullPath);
+			Return False;
+		End If;
+		Return True;
+	End Function WriteTextFile;
+
+	// ===========================================================================================
+	// Поиск и замена (переход к строке — через панель фрагмента: запись SelStart не работает)
+	// ===========================================================================================
+	Function FindPosFrom(What: String; StartPos: Integer): Integer;
+	Var
+		U, Us: String;
+		P: Integer;
+	Begin
+		If StartPos < 0 Then
+			StartPos := 0;
+		End If;
+		If (StartPos >= CodeMemo.Text.Length) Or (String.Trim(What) = "") Then
+			Return -1;
+		End If;
+		U := String.ToUpper(CodeMemo.Text.SubString(StartPos, CodeMemo.Text.Length - StartPos));
+		Us := String.ToUpper(What);
+		P := U.IndexOf(Us);
+		If P < 0 Then
+			Return -1;
+		End If;
+		Return StartPos + P;
+	End Function FindPosFrom;
+
+	Sub FindNextOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		What: String;
+		Pos, LineNo: Integer;
+	Begin
+		What := FindEdit.Text;
+		If String.Trim(What) = "" Then
+			Frag("⚠ укажите, что найти (поле «Найти:»)");
+			Return;
+		End If;
+		If What <> LastFind Then
+			FoundPos := 0;
+			LastFind := What;
+		End If;
+		Pos := FindPosFrom(What, FoundPos);
+		If Pos < 0 Then
+			Pos := FindPosFrom(What, 0);
+			If Pos < 0 Then
+				Frag("«" + What + "» не найдено");
+				Return;
+			End If;
+			Frag("(поиск продолжен с начала текста)");
+		End If;
+		FoundPos := Pos + What.Length;
+		LineNo := LineNumberOf(Pos);
+		Frag("Найдено: строка " + LineNo.ToString + ", позиция " + Pos.ToString);
+		ScrollToPos(Pos, LineNo);                        // пролистать редактор (или показать строку в просмотре)
+		ShowFrag(LineNo, 4);
+	End Sub FindNextOnClick;
+
+	Sub ReplaceAllOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		What, To_, Rest: String;
+		P, Cnt: Integer;
+	Begin
+		What := FindEdit.Text;
+		To_ := ReplEdit.Text;
+		If String.Trim(What) = "" Then
+			Frag("⚠ укажите, что найти (поле «Найти:»)");
+			Return;
+		End If;
+		Rest := CodeMemo.Text;
+		Cnt := 0;
+		P := Rest.IndexOf(What);
+		While P >= 0 Do
+			Cnt := Cnt + 1;
+			Rest := Rest.SubString(P + What.Length, Rest.Length - P - What.Length);
+			P := Rest.IndexOf(What);
+		End While;
+		If Cnt = 0 Then
+			Frag("«" + What + "» не найдено (замена учитывает регистр)");
+			Return;
+		End If;
+		CodeMemo.Text := String.Replace(CodeMemo.Text, What, To_);
+		Frag("Заменено вхождений: " + Cnt.ToString + " («" + What + "» → «" + To_ + "»)");
+		UpdateStatus;
+	End Sub ReplaceAllOnClick;
+
+	Sub GoLineOnClick(Sender: Object; Args: IMouseEventArgs);
+	Var
+		N: Integer;
+	Begin
+		N := StrToInt(String.Trim(LineEdit.Text));
+		If N <= 0 Then
+			Frag("⚠ укажите номер строки (поле «Номер строки:»)");
+			Return;
+		End If;
+		Frag("Строка " + N.ToString + ":");
+		ShowFrag(N, 6);
+	End Sub GoLineOnClick;
+
+	// Номер строки по позиции символа (строки считаем по CRLF)
+	Function LineNumberOf(Pos: Integer): Integer;
+	Var
+		Head: String;
+		P, N: Integer;
+	Begin
+		If Pos > CodeMemo.Text.Length Then
+			Pos := CodeMemo.Text.Length;
+		End If;
+		If Pos < 0 Then
+			Pos := 0;
+		End If;
+		Head := CodeMemo.Text.SubString(0, Pos);
+		N := 1;
+		P := Head.IndexOf(CRLF_);
+		While P >= 0 Do
+			N := N + 1;
+			Head := Head.SubString(P + CRLF_.Length, Head.Length - P - CRLF_.Length);
+			P := Head.IndexOf(CRLF_);
+		End While;
+		Return N;
+	End Function LineNumberOf;
+
+	Function LineAt(N: Integer): String;
+	Var
+		Rest, Line: String;
+		P, Cnt: Integer;
+	Begin
+		Rest := CodeMemo.Text;
+		Cnt := 1;
+		While Rest <> "" Do
+			P := Rest.IndexOf(CRLF_);
+			If P < 0 Then
+				Line := Rest;
+				Rest := "";
+			Else
+				Line := Rest.SubString(0, P);
+				Rest := Rest.SubString(P + CRLF_.Length, Rest.Length - P - CRLF_.Length);
+			End If;
+			If Cnt = N Then
+				Return Line;
+			End If;
+			Cnt := Cnt + 1;
+		End While;
+		Return "";
+	End Function LineAt;
+
+	// Показать в панели фрагмента строку N и её окружение (±Radius); целевая строка помечена «>>»
+	Sub ShowFrag(N, Radius: Integer);
+	Var
+		I: Integer;
+		Line: String;
+		Stop_: Boolean;
+	Begin
+		I := N - Radius;
+		If I < 1 Then
+			I := 1;
+		End If;
+		Stop_ := False;
+		While (I <= N + Radius) And (Not Stop_) Do
+			Line := LineAt(I);
+			If (String.Trim(Line) = "") And (I > N) Then
+				Stop_ := True;                                 // дальше текста нет
+			Else
+				If I = N Then
+					Frag(">> " + I.ToString + ": " + Line);
+				Else
+					Frag("   " + I.ToString + ": " + Line);
+				End If;
+				I := I + 1;
+			End If;
+		End While;
+	End Sub ShowFrag;
+
+	// Строка цифр → целое (без исключений; условие всегда многострочное — линтер не принимает
+	// запись условия и закрытия блока в одной строке)
+	Function StrToInt(S: String): Integer;
+	Var
+		Digits: Array;
+		I, J, N, D: Integer;
+		Ch: String;
+		Ok: Boolean;
+	Begin
+		Digits := New Variant[10];
+		Digits[0] := "0";
+		Digits[1] := "1";
+		Digits[2] := "2";
+		Digits[3] := "3";
+		Digits[4] := "4";
+		Digits[5] := "5";
+		Digits[6] := "6";
+		Digits[7] := "7";
+		Digits[8] := "8";
+		Digits[9] := "9";
+		N := 0;
+		Ok := True;
+		I := 0;
+		While (I <= S.Length - 1) And Ok Do
+			Ch := S.SubString(I, 1);
+			D := -1;
+			J := 0;
+			While J <= 9 Do
+				If Ch = Digits[J] Then
+					D := J;
+				End If;
+				J := J + 1;
+			End While;
+			If D < 0 Then
+				Ok := False;
+			Else
+				N := N * 10 + D;
+			End If;
+			I := I + 1;
+		End While;
+		Return N;
+	End Function StrToInt;
+
+	// ===========================================================================================
+	// Статус, журнал, завершение класса
+	// ===========================================================================================
+	Sub TimerTick(Sender: Object; Args: IEventArgs);
+	Begin
+		UpdateStatus;
+		// Структуру пересобираем только когда текст изменился (дешёвая проверка по длине).
+		// Карту строк — только для небольших файлов (до ~20 000 символов): на 107 КБ перерисовка
+		// 2700 строк в секунду могла бы «подтормаживать»; для больших файлов карта обновляется
+		// по кнопке «Проверить (текст)» и при открытии файла.
+		ApplyExtras;                                         // чекбоксы доп. функционала (вкл/выкл панелей)
+		Try
+			If ExtraAuto Then
+				If CodeMemo.Text.Length <> LastStructLen Then
+					RefillStructure;
+					If CodeMemo.Text.Length <= 20000 Then
+						RefillMap;
+					End If;
+				End If;
+			End If;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: обновление структуры — " + e.Message);
+		End Try;
+	End Sub TimerTick;
+
+	Sub UpdateStatus;
+	Var
+		S, State, Name: String;
+		Pos: Integer;
+	Begin
+		State := "сохранён";
+		Name := CurName;
+		Try
+			If CodeMemo.Text <> SavedText Then
+				State := "ИЗМЕНЁН (не сохранён)";
+			End If;
+		Except On e: Exception Do
+			State := "";
+		End Try;
+		If Name = "" Then
+			Name := "(ничего не открыто)";
+		End If;
+		Pos := 0;
+		Try
+			Pos := CodeMemo.SelStart;
+		Except On e: Exception Do
+			Pos := 0;
+		End Try;
+		If Mode = "REPO" Then
+			S := "Сборка: " + String.Trim(AsmEdit.Text);
+		Else
+			S := "Папка: " + String.Trim(FolderEdit.Text);
+		End If;
+		S := S + "   |   Открыто: " + Name;
+		S := S + "   |   символов: " + CodeMemo.Text.Length.ToString;
+		S := S + "   |   строка: " + LineNumberOf(Pos).ToString;
+		S := S + "   |   " + State;
+		Try
+			StatusLabel.Text := S;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: статус — " + e.Message);
+		End Try;
+	End Sub UpdateStatus;
+
+	Sub Log(Line: String);
+	Begin
+		Frag(Line);
+	End Sub Log;
+
+	Sub Frag(Line: String);
+	Var
+		All: String;
+	Begin
+		All := FragMemo.Text + Line + CRLF_;
+		// Держим в панели только «хвост» журнала: свежие строки всегда в конце и не надо мотать вручную
+		If All.Length > 4000 Then
+			All := All.SubString(All.Length - 4000, 4000);
+		End If;
+		Try
+			FragMemo.Text := All;
+			// Автопрокрутка к последней строке. Запись SelStart в этом рантайме не работает (замеры 1.117),
+			// а SelLength — работает, поэтому выделяем текст до конца: поле обычно прокручивается к концу.
+			// Если выделение журнала будет мешать — уберём эту строку по вашему замечанию.
+			FragMemo.SelLength := FragMemo.Text.Length;
+		Except On e: Exception Do
+			Debug.WriteLine("Редактор: панель фрагмента — " + e.Message);
+		End Try;
+		Debug.WriteLine("Редактор: " + Line);
+	End Sub Frag;
+End Class FOREDITORForm;
