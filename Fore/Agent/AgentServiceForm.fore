@@ -409,9 +409,13 @@ Class AGENTSERVICEForm: Form
 		Elseif Op = "REFS" Then
 			DoRefs(ModuleId);
 		Elseif Op = "MKMOD" Then
-			DoMkMod(ModuleId, Payload);
+			DoMkMod(ModuleId, Payload, ParamOf(Command, "PARENT"));
 		Elseif Op = "MKASM" Then
-			DoMkAsm(ParamOf(Command, "ASM"));
+			DoMkAsm(ParamOf(Command, "ASM"), ParamOf(Command, "PARENT"));
+		Elseif Op = "DELOBJ" Then
+			DoDelObj(ModuleId);
+		Elseif Op = "MOVETO" Then
+			DoMoveTo(ModuleId, ParamOf(Command, "DEST"));
 		Elseif Op = "FLUSHCACHE" Then
 			DoFlushCache;
 		Else
@@ -787,12 +791,15 @@ Class AGENTSERVICEForm: Form
 		End For;
 	End Sub DoRefs;
 
-	// OP=MKMOD, MOD=<идентификатор>, далее TEXT и содержимое.
+	// OP=MKMOD, MOD=<идентификатор>, [PARENT=<родитель>], далее TEXT и содержимое.
 	// Создаёт модуль, если его нет; если есть — заменяет текст.
-	Sub DoMkMod(ModuleId, Payload: String);
+	// ВАЖНО: без PARENT объект создаётся В КОРНЕ репозитория (проверено на стенде:
+	// TASKCONTAINERLIB попал в корень вместо сборки UNVAIL_ASSEMBLY).
+	Sub DoMkMod(ModuleId, Payload, ParentId: String);
 	Var
 		MB: IMetabase;
 		Desc: IMetabaseObjectDescriptor;
+		ParentDesc: IMetabaseObjectDescriptor;
 		M: IModule;
 		Info: IMetabaseObjectCreateInfo;
 		Created: Boolean;
@@ -810,11 +817,24 @@ Class AGENTSERVICEForm: Form
 
 		If IsNull(Desc) Then
 			// Модуля нет — создаём
+			ParentDesc := Null;
+			If ParentId <> "" Then
+				ParentDesc := MB.ItemById(ParentId);
+				If IsNull(ParentDesc) Then
+					Append_("STATUS=ERR");
+					Append_("WHAT=MKMOD");
+					Append_("MSG=родитель не найден: " + ParentId);
+					Return;
+				End If;
+			End If;
 			Try
 				Info := MB.CreateCreateInfo;
 				Info.Id := ModuleId;
 				Info.Name := ModuleId;
 				Info.ClassId := MetabaseObjectClass.KE_CLASS_MODULE;
+				If Not IsNull(ParentDesc) Then
+					Info.Parent := ParentDesc;
+				End If;
 				Desc := MB.CreateObject(Info).Edit;
 				Created := True;
 			Except On e: Exception Do
@@ -843,17 +863,18 @@ Class AGENTSERVICEForm: Form
 		Append_("STATUS=OK");
 		Append_("WHAT=MKMOD");
 		Append_("MOD=" + ModuleId);
+		Append_("PARENT=" + ParentId);
 		Append_("CREATED=" + Created.ToString);
 		Append_("OLD_CHARS=" + OldChars.ToString);
 		Append_("NEW_CHARS=" + Payload.Length.ToString);
 	End Sub DoMkMod;
 
-	// OP=MKASM, ASM=<идентификатор> — создать сборку, если её нет.
-	// Сборка нужна как контейнер для модулей проекта.
-	Sub DoMkAsm(Asm: String);
+	// OP=MKASM, ASM=<идентификатор>, [PARENT=<родитель>] — создать сборку.
+	Sub DoMkAsm(Asm, ParentId: String);
 	Var
 		MB: IMetabase;
 		Desc: IMetabaseObjectDescriptor;
+		ParentDesc: IMetabaseObjectDescriptor;
 		Info: IMetabaseObjectCreateInfo;
 		Created: Boolean;
 	Begin
@@ -866,11 +887,24 @@ Class AGENTSERVICEForm: Form
 		Desc := MB.ItemById(Asm);
 		Created := False;
 		If IsNull(Desc) Then
+			ParentDesc := Null;
+			If ParentId <> "" Then
+				ParentDesc := MB.ItemById(ParentId);
+				If IsNull(ParentDesc) Then
+					Append_("STATUS=ERR");
+					Append_("WHAT=MKASM");
+					Append_("MSG=родитель не найден: " + ParentId);
+					Return;
+				End If;
+			End If;
 			Try
 				Info := MB.CreateCreateInfo;
 				Info.Id := Asm;
 				Info.Name := Asm;
 				Info.ClassId := MetabaseObjectClass.KE_CLASS_ASSEMBLY;
+				If Not IsNull(ParentDesc) Then
+					Info.Parent := ParentDesc;
+				End If;
 				Desc := MB.CreateObject(Info).Edit;
 				Created := True;
 			Except On e: Exception Do
@@ -883,10 +917,101 @@ Class AGENTSERVICEForm: Form
 		Append_("STATUS=OK");
 		Append_("WHAT=MKASM");
 		Append_("ASM=" + Asm);
+		Append_("PARENT=" + ParentId);
 		Append_("CREATED=" + Created.ToString);
 		Append_("NAME=" + Desc.Name);
 		Append_("CHILDREN=" + Desc.Children.Count.ToString);
 	End Sub DoMkAsm;
+
+	// OP=DELOBJ, MOD=<идентификатор> — удалить объект.
+	// Предохранитель: удаляем только модули (класс 1537) и формы (1538).
+	// Всё остальное — отказ, чтобы случайно не снести нужное.
+	// Нужно для уборки объектов, созданных по ошибке.
+	Sub DoDelObj(ModuleId: String);
+	Var
+		MB: IMetabase;
+		Desc: IMetabaseObjectDescriptor;
+		Cls: Integer;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не найден: " + ModuleId);
+			Return;
+		End If;
+		Cls := Desc.ClassId;
+		Append_("MOD=" + ModuleId);
+		Append_("CLASS=" + Cls.ToString);
+		Append_("NAME=" + Desc.Name);
+		If (Cls <> 1537) And (Cls <> 1538) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=удаляю только модули (1537) и формы (1538); этот класс — " + Cls.ToString());
+			Return;
+		End If;
+		Try
+			MB.DeleteObject(Desc.Key);
+			Append_("STATUS=OK");
+			Append_("WHAT=DELOBJ");
+			Append_("MSG=объект удалён");
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=DELOBJ");
+			Append_("MSG=удалить не удалось: " + e.Message);
+		End Try;
+	End Sub DoDelObj;
+
+	// OP=MOVETO, MOD=<идентификатор>, DEST=<приёмник> — перенести объект
+	// в другой объект репозитория (справка: MoveTo(Dest)).
+	// Приёмник не должен быть листовым элементом — сборка и папка подходят.
+	Sub DoMoveTo(ModuleId, DestId: String);
+	Var
+		MB: IMetabase;
+		Desc, Dest: IMetabaseObjectDescriptor;
+	Begin
+		If ModuleId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан MOD");
+			Return;
+		End If;
+		If DestId = "" Then
+			Append_("STATUS=ERR");
+			Append_("MSG=не указан DEST");
+			Return;
+		End If;
+		MB := MetabaseClass.Active;
+		Desc := MB.ItemById(ModuleId);
+		If IsNull(Desc) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=объект не найден: " + ModuleId);
+			Return;
+		End If;
+		Dest := MB.ItemById(DestId);
+		If IsNull(Dest) Then
+			Append_("STATUS=ERR");
+			Append_("MSG=приёмник не найден: " + DestId);
+			Return;
+		End If;
+		Try
+			Desc.MoveTo(Dest);
+			Append_("STATUS=OK");
+			Append_("WHAT=MOVETO");
+			Append_("MOD=" + ModuleId);
+			Append_("DEST=" + DestId);
+			Append_("MSG=объект перенесён");
+		Except On e: Exception Do
+			Append_("STATUS=ERR");
+			Append_("WHAT=MOVETO");
+			Append_("MOD=" + ModuleId);
+			Append_("DEST=" + DestId);
+			Append_("MSG=перенести не удалось: " + e.Message);
+		End Try;
+	End Sub DoMoveTo;
 
 	// OP=FLUSHCACHE — очистить локальный кэш сборок.
 	// Справка (IMetabaseCache.FlushAll): «будет очищен локальный кэш сборок,

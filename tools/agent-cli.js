@@ -146,8 +146,8 @@ async function main() {
   if (!cmd) {
     console.log('Основной канал (AgentService):');
     console.log('  ping | info | list | exists <Obj> | read <Mod> | compile <Asm>');
-    console.log('  listasm <Asm> | refs <Mod> | write <Mod> <файл.fore>');
-    console.log('  mkasm <Asm> | mkmod <Mod> <файл.fore>');
+    console.log('  listasm <Asm> | refs <Mod> | write <Mod> <файл.fore> | flushcache');
+    console.log('  mkasm <Asm> [Parent] | mkmod <Mod> <файл.fore> [Parent] | delobj <Obj> | moveto <Obj> <Dest>');
     console.log('Прошивка (AgentKeeper) — правка сменного кода:');
     console.log('  khealth [Mod]            состояние и компиляция сборки');
     console.log('  kget [Mod]               прочитать текст целевого модуля');
@@ -280,7 +280,8 @@ async function main() {
       return;
     }
     const body = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-    const text = await send(`OP=MKMOD\nMOD=${id}\nTEXT\n${body}\n`);
+    const parent = args[3] || '';
+    const text = await send(`OP=MKMOD\nMOD=${id}\nPARENT=${parent}\nTEXT\n${body}\n`);
     if (text) show(text);
     return;
   }
@@ -289,7 +290,8 @@ async function main() {
     // Создать сборку, если её нет: mkasm <AssemblyId>
     const id = args[1];
     if (!id) { console.error('Формат: mkasm <AssemblyId>'); process.exitCode = 2; return; }
-    const text = await send(`OP=MKASM\nASM=${id}\n`);
+    const parent = args[2] || '';
+    const text = await send(`OP=MKASM\nASM=${id}\nPARENT=${parent}\n`);
     if (text) show(text);
     return;
   }
@@ -373,6 +375,33 @@ async function main() {
       `OP=KPUT\nTARGET=${id}\nNOCMP=${nocmp ? 1 : 0}\nTEXT\n${body}\n`,
       'keeper'
     );
+    if (text) show(text);
+    return;
+  }
+
+  if (cmd === 'delobj') {
+    // Удалить объект: delobj <ObjectId>. Только модули и формы.
+    const id = args[1];
+    if (!id) { console.error('Формат: delobj <ObjectId>'); process.exitCode = 2; return; }
+    const text = await send(`OP=DELOBJ\nMOD=${id}\n`);
+    if (text) show(text);
+    return;
+  }
+
+  if (cmd === 'moveto') {
+    // Перенести объект: moveto <ObjectId> <DestId>  (например, в сборку)
+    const id = args[1];
+    const dest = args[2];
+    if (!id || !dest) { console.error('Формат: moveto <ObjectId> <DestId>'); process.exitCode = 2; return; }
+    const text = await send(`OP=MOVETO\nMOD=${id}\nDEST=${dest}\n`);
+    if (text) show(text);
+    return;
+  }
+
+  if (cmd === 'flushcache') {
+    // Очистить локальный кэш сборок: платформа иначе исполняет старый
+    // скомпилированный образ модуля, а не текущий текст.
+    const text = await send('OP=FLUSHCACHE\n');
     if (text) show(text);
     return;
   }
